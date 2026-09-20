@@ -4,6 +4,7 @@ from starlette.responses import Response
 
 app = FastAPI()
 
+# 1. Le middleware CORS DOIT être ajouté en premier
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
@@ -15,7 +16,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Utiliser une vraie fonction def au lieu d'une lambda
+# 2. Ensuite seulement, les routes
 @app.options("/")
 def options_root():
     return Response(status_code=200)
