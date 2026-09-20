@@ -15,9 +15,10 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Route explicite pour capturer les requêtes OPTIONS de preflight sur la racine
+# Utiliser une vraie fonction def au lieu d'une lambda
 @app.options("/")
-options_root = lambda: Response(status_code=200)
+def options_root():
+    return Response(status_code=200)
 
 @app.get("/")
 def read_root():
