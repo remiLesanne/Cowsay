@@ -25,7 +25,7 @@ def options_root():
 def read_root():
     return {
         "message": "🔥 TEST DEPLOYMENT AWS - LE CORS ET LE CODE SONT BIEN A JOUR ! 🔥",
-        "version": "v2-debug"
+        "version": "v3-debug"
     }
 
 @app.get("/health")
