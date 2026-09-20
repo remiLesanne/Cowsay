@@ -3,10 +3,14 @@ from fastapi.middleware.cors import CORSMiddleware
 
 app = FastAPI()
 
-# Configuration CORS pour autoriser ton frontend (local et futur Vercel)
+origins = [
+    "http://localhost:3000",
+    "https://cowsay-one.vercel.app",
+]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # En production, tu pourras restreindre à ton URL Vercel
+    allow_origins=origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -14,7 +18,11 @@ app.add_middleware(
 
 @app.get("/")
 def read_root():
-    return {"message": "Hello depuis FastAPI sur AWS ! 🚀"}
+    # MODIFICATION DE TEST : On change radicalement le message pour voir la différence
+    return {
+        "message": "🔥 TEST DEPLOYMENT AWS - LE CORS ET LE CODE SONT BIEN A JOUR ! 🔥",
+        "version": "v2-debug"
+    }
 
 @app.get("/health")
 def health_check():
