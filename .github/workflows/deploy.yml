@@ -4,6 +4,9 @@ on:
   push:
     branches:
       - main
+    paths:
+      - 'backend/**'
+      - '.github/workflows/deploy.yml'
 
 jobs:
   deploy:
@@ -32,8 +35,9 @@ jobs:
           ECR_REPOSITORY: cowsay-backend
           IMAGE_TAG: latest
         run: |
-          docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG .
-          docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
+          # MODIFICATION ICI : on pointe vers ./backend au lieu de .
+          docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG ./backend
+          docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_Tag
           echo "image=$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG" >> $GITHUB_OUTPUT
 
       - name: Update ECS service
