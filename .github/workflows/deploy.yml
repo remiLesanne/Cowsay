@@ -42,7 +42,9 @@ jobs:
 
       - name: Download task definition
         run: |
-          aws ecs describe-task-definition --task-definition cowsay-backend-dcab --query taskDefinition > task-definition.json
+          # Récupère dynamiquement la task definition associée au service ECS
+          TASK_DEF_ARN=$(aws ecs describe-services --cluster default --services cowsay-backend-dcab --query "services[0].taskDefinition" --output text)
+          aws ecs describe-task-definition --task-definition $TASK_DEF_ARN --query taskDefinition > task-definition.json
 
       - name: Fill in the new image in the Amazon ECS task definition
         id: render-task-def
