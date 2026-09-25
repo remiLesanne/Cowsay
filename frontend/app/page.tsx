@@ -6,7 +6,8 @@ import { analyzeFile } from './lib/api';
 
 const ACCEPTED_EXTENSIONS = ['.py', '.js', '.ts', '.tsx', '.jsx', '.java', '.go', '.rs', '.php', '.rb', '.c', '.cpp', '.cs', '.xml', '.md', '.zip'];
 const ACCEPTED_LABEL = 'Code, XML, Markdown ou ZIP';
-const MAX_FILE_SIZE = 10 * 1024 * 1024;
+const MAX_CODE_FILE_SIZE = 10 * 1024 * 1024;
+const MAX_ZIP_FILE_SIZE = 50 * 1024 * 1024;
 
 function FileCodeIcon() {
   return <svg aria-hidden="true" className="h-7 w-7" fill="none" viewBox="0 0 24 24"><path d="m8.5 8-4 4 4 4M15.5 8l4 4-4 4M13.5 5l-3 14" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.7" /></svg>;
@@ -40,9 +41,12 @@ export default function Home() {
       setMessage('Ce format n’est pas pris en charge. Ajoutez un fichier de code, XML, Markdown ou ZIP.');
       return;
     }
-    if (candidate.size > MAX_FILE_SIZE) {
+    const isZip = candidate.name.toLowerCase().endsWith('.zip');
+    const maxFileSize = isZip ? MAX_ZIP_FILE_SIZE : MAX_CODE_FILE_SIZE;
+
+    if (candidate.size > maxFileSize) {
       setFile(null);
-      setMessage('Ce fichier dépasse la taille maximale de 10 Mo.');
+      setMessage(`Ce fichier dépasse la taille maximale de ${isZip ? '50' : '10'} Mo.`);
       return;
     }
     setMessage('');

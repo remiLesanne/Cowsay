@@ -14,7 +14,17 @@ ALLOWED_EXTENSIONS = {
     ".zip",
 }
 MAX_FILE_SIZE = 10 * 1024 * 1024
+MAX_ZIP_FILE_SIZE = 50 * 1024 * 1024
 MAX_ARCHIVE_SIZE = 50 * 1024 * 1024
+IGNORED_ARCHIVE_DIRECTORIES = {
+    "node_modules",
+    ".git",
+    ".next",
+    "dist",
+    "build",
+    "venv",
+    "__pycache__",
+}
 
 # 1. Le middleware CORS DOIT être ajouté en premier
 app.add_middleware(
@@ -52,12 +62,17 @@ async def create_analysis(file: UploadFile = File(...)):
             detail="Format de fichier non pris en charge",
         )
 
-    content = await file.read(MAX_FILE_SIZE + 1)
+    max_file_size = MAX_ZIP_FILE_SIZE if extension == ".zip" else MAX_FILE_SIZE
+    content = await file.read(max_file_size + 1)
 
-    if len(content) > MAX_FILE_SIZE:
+    if len(content) > max_file_size:
         raise HTTPException(
             status_code=413,
-            detail="Fichier trop volumineux (10 Mo maximum)",
+            detail=(
+                "Archive ZIP trop volumineuse (50 Mo maximum)"
+                if extension == ".zip"
+                else "Fichier trop volumineux (10 Mo maximum)"
+            ),
         )
 
     if not content:
@@ -74,11 +89,8 @@ async def create_analysis(file: UploadFile = File(...)):
         uncompressed_size = 0
 
         for entry in archive_entries:
-            entry_path = Path(entry.filename)
-            uncompressed_size += entry.file_size
-
-            if entry.is_dir():
-                continue
+            normalized_name = entry.filename.replace("\\", "/")
+            entry_path = Path(normalized_name)
 
             if entry_path.is_absolute() or ".." in entry_path.parts:
                 raise HTTPException(
@@ -86,8 +98,19 @@ async def create_analysis(file: UploadFile = File(...)):
                     detail="L’archive contient un chemin de fichier dangereux",
                 )
 
+            if any(
+                directory in IGNORED_ARCHIVE_DIRECTORIES
+                for directory in entry_path.parts
+            ):
+                continue
+
+            uncompressed_size += entry.file_size
+
+            if entry.is_dir():
+                continue
+
             if entry_path.suffix.lower() in ALLOWED_EXTENSIONS - {".zip"}:
-                source_files.append(entry.filename)
+                source_files.append(normalized_name)
 
         if uncompressed_size > MAX_ARCHIVE_SIZE:
             raise HTTPException(
