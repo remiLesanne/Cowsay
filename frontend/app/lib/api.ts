@@ -16,11 +16,11 @@ export async function fetchFromApi(endpoint: string, options: RequestInit = {}) 
   return response.json();
 }
 
-export async function analyzeFile(file: File) {
+export async function analyzeFile(file: File, outputFormat: 'xml' | 'markdown' = 'xml') {
   const formData = new FormData();
   formData.append('file', file);
 
-  const response = await fetch(`${API_URL}/api/v1/analyses`, {
+  const response = await fetch(`${API_URL}/api/v1/analyses?output_format=${outputFormat}`, {
     method: 'POST',
     body: formData,
   });

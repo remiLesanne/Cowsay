@@ -73,12 +73,14 @@ export default function Home() {
     try {
       if (file.name.toLowerCase().endsWith('.zip')) {
         const analysisResult = await analyzeFile(file);
+        const displayResult = { ...analysisResult };
+        delete displayResult.representation;
         sessionStorage.setItem('ai-risk-check-file', JSON.stringify({
           name: file.name,
           size: file.size,
           type: file.type,
           content: '',
-          analysisResult,
+          analysisResult: displayResult,
         }));
         router.push('/analyse');
         return;
@@ -115,7 +117,7 @@ export default function Home() {
         <div className="mt-12 rounded-2xl border border-slate-200 bg-white p-3 shadow-[0_12px_40px_rgba(15,23,42,0.05)] sm:p-4">
           <div aria-label="Zone de dépôt de fichier" className={`flex min-h-[270px] cursor-pointer flex-col items-center justify-center rounded-xl border-2 border-dashed px-6 py-10 transition-colors ${isDragging ? 'border-[#277da1] bg-[#f0f9fc]' : 'border-slate-300 bg-slate-50/60 hover:border-[#5a9db7] hover:bg-[#f7fcfd]'}`} onClick={() => inputRef.current?.click()} onDragEnter={(event) => { event.preventDefault(); setIsDragging(true); }} onDragOver={(event) => event.preventDefault()} onDragLeave={(event) => { if (event.currentTarget === event.target) setIsDragging(false); }} onDrop={handleDrop} role="button" tabIndex={0} onKeyDown={(event) => { if (event.key === 'Enter' || event.key === ' ') inputRef.current?.click(); }}>
             <input ref={inputRef} className="hidden" type="file" accept={ACCEPTED_EXTENSIONS.join(',')} onChange={handleInput} />
-            {file ? <><div className="mb-5 flex h-14 w-14 items-center justify-center rounded-full bg-emerald-50 text-emerald-600"><CheckIcon /></div><p className="max-w-full truncate text-base font-medium text-slate-800">{file.name}</p><p className="mt-1 text-sm text-slate-500">{formatSize(file.size)} · Fichier prêt à être analysé</p><button className="mt-5 text-sm font-medium text-[#277da1] hover:underline" onClick={(event) => { event.stopPropagation(); inputRef.current?.click(); }} type="button">Choisir un autre fichier</button></> : <><div className="mb-5 flex h-14 w-14 items-center justify-center rounded-full bg-[#e8f4f7] text-[#277da1]"><UploadIcon /></div><p className="text-base font-medium text-slate-700">Glissez-déposez votre fichier ici</p><p className="mt-2 text-sm text-slate-500">ou <span className="font-medium text-[#277da1]">parcourez vos fichiers</span></p><p className="mt-6 text-xs text-slate-400">{ACCEPTED_LABEL} · 10 Mo maximum</p></>}
+            {file ? <><div className="mb-5 flex h-14 w-14 items-center justify-center rounded-full bg-emerald-50 text-emerald-600"><CheckIcon /></div><p className="max-w-full truncate text-base font-medium text-slate-800">{file.name}</p><p className="mt-1 text-sm text-slate-500">{formatSize(file.size)} · Fichier prêt à être analysé</p><button className="mt-5 text-sm font-medium text-[#277da1] hover:underline" onClick={(event) => { event.stopPropagation(); inputRef.current?.click(); }} type="button">Choisir un autre fichier</button></> : <><div className="mb-5 flex h-14 w-14 items-center justify-center rounded-full bg-[#e8f4f7] text-[#277da1]"><UploadIcon /></div><p className="text-base font-medium text-slate-700">Glissez-déposez votre fichier ici</p><p className="mt-2 text-sm text-slate-500">ou <span className="font-medium text-[#277da1]">parcourez vos fichiers</span></p><p className="mt-6 text-xs text-slate-400">{ACCEPTED_LABEL} · 50 Mo maximum</p></>}
           </div>
           {message && <p className="px-2 pt-3 text-left text-sm text-rose-600">{message}</p>}
         </div>

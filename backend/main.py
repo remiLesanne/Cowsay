@@ -1,6 +1,9 @@
 import io
+import subprocess
 import zipfile
 from pathlib import Path
+from tempfile import TemporaryDirectory
+from typing import Literal
 
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
@@ -16,6 +19,9 @@ ALLOWED_EXTENSIONS = {
 MAX_FILE_SIZE = 10 * 1024 * 1024
 MAX_ZIP_FILE_SIZE = 50 * 1024 * 1024
 MAX_ARCHIVE_SIZE = 50 * 1024 * 1024
+MAX_ARCHIVE_FILES = 1000
+REPOMIX_TIMEOUT_SECONDS = 60
+REPOMIX_BIN = Path(__file__).parent / "node_modules" / ".bin" / "repomix"
 IGNORED_ARCHIVE_DIRECTORIES = {
     "node_modules",
     ".git",
@@ -25,6 +31,9 @@ IGNORED_ARCHIVE_DIRECTORIES = {
     "venv",
     "__pycache__",
 }
+REPOMIX_IGNORES = ",".join(
+    f"{directory}/**" for directory in sorted(IGNORED_ARCHIVE_DIRECTORIES)
+)
 
 # 1. Le middleware CORS DOIT être ajouté en premier
 app.add_middleware(
@@ -50,9 +59,106 @@ def read_root():
         "version": "v3-debug"
     }
 
+def _is_ignored_archive_path(path: Path) -> bool:
+    return any(
+        directory in IGNORED_ARCHIVE_DIRECTORIES
+        for directory in path.parts
+    )
+
+
+def _run_repomix(project_dir: Path, output_format: Literal["xml", "markdown"]):
+    try:
+        completed_process = subprocess.run(
+            [
+                str(REPOMIX_BIN),
+                "--style",
+                output_format,
+                "--output",
+                "-",
+                "--ignore",
+                REPOMIX_IGNORES,
+            ],
+            cwd=project_dir,
+            capture_output=True,
+            text=True,
+            timeout=REPOMIX_TIMEOUT_SECONDS,
+            check=False,
+        )
+    except FileNotFoundError as error:
+        raise HTTPException(
+            status_code=503,
+            detail="Repomix n’est pas installé sur le serveur",
+        ) from error
+    except subprocess.TimeoutExpired as error:
+        raise HTTPException(
+            status_code=504,
+            detail="La conversion Repomix a dépassé le délai autorisé",
+        ) from error
+
+    if completed_process.returncode != 0:
+        raise HTTPException(
+            status_code=502,
+            detail="Repomix n’a pas réussi à convertir le projet",
+        )
+
+    return completed_process.stdout
+
+
+def _write_zip_to_project(archive: zipfile.ZipFile, project_dir: Path) -> list[str]:
+    source_files = []
+    uncompressed_size = 0
+
+    for entry in archive.infolist():
+        normalized_name = entry.filename.replace("\\", "/")
+        entry_path = Path(normalized_name)
+
+        if entry_path.is_absolute() or ".." in entry_path.parts:
+            raise HTTPException(
+                status_code=400,
+                detail="L’archive contient un chemin de fichier dangereux",
+            )
+
+        if _is_ignored_archive_path(entry_path):
+            continue
+
+        if entry.is_dir():
+            continue
+
+        uncompressed_size += entry.file_size
+        if uncompressed_size > MAX_ARCHIVE_SIZE:
+            raise HTTPException(
+                status_code=413,
+                detail="Le contenu décompressé dépasse la limite autorisée",
+            )
+
+        if len(source_files) >= MAX_ARCHIVE_FILES:
+            raise HTTPException(
+                status_code=413,
+                detail="L’archive contient trop de fichiers",
+            )
+
+        target = (project_dir / entry_path).resolve()
+        if project_dir.resolve() not in target.parents:
+            raise HTTPException(
+                status_code=400,
+                detail="L’archive contient un chemin de fichier dangereux",
+            )
+
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(archive.read(entry))
+
+        if entry_path.suffix.lower() in ALLOWED_EXTENSIONS - {".zip"}:
+            source_files.append(normalized_name)
+
+    return source_files
+
+
 @app.post("/api/v1/analyses")
-async def create_analysis(file: UploadFile = File(...)):
-    """Receive a source file and return a first analysis placeholder."""
+async def create_analysis(
+    file: UploadFile = File(...),
+    output_format: Literal["xml", "markdown"] = "xml",
+):
+    """Convert an uploaded project to an AI-friendly Repomix representation."""
     filename = file.filename or ""
     extension = Path(filename).suffix.lower()
 
@@ -78,76 +184,39 @@ async def create_analysis(file: UploadFile = File(...)):
     if not content:
         raise HTTPException(status_code=400, detail="Le fichier est vide")
 
-    if extension == ".zip":
-        try:
-            archive = zipfile.ZipFile(io.BytesIO(content))
-            archive_entries = archive.infolist()
-        except zipfile.BadZipFile as error:
-            raise HTTPException(status_code=400, detail="Archive ZIP invalide") from error
+    source_files = []
+    with TemporaryDirectory(prefix="ai-risk-check-") as temporary_directory:
+        project_dir = Path(temporary_directory) / "project"
+        project_dir.mkdir()
 
-        source_files = []
-        uncompressed_size = 0
+        if extension == ".zip":
+            try:
+                archive = zipfile.ZipFile(io.BytesIO(content))
+            except zipfile.BadZipFile as error:
+                raise HTTPException(status_code=400, detail="Archive ZIP invalide") from error
+            source_files = _write_zip_to_project(archive, project_dir)
+        else:
+            safe_filename = Path(filename).name or "uploaded-file"
+            (project_dir / safe_filename).write_bytes(content)
+            source_files = [safe_filename]
 
-        for entry in archive_entries:
-            normalized_name = entry.filename.replace("\\", "/")
-            entry_path = Path(normalized_name)
-
-            if entry_path.is_absolute() or ".." in entry_path.parts:
-                raise HTTPException(
-                    status_code=400,
-                    detail="L’archive contient un chemin de fichier dangereux",
-                )
-
-            if any(
-                directory in IGNORED_ARCHIVE_DIRECTORIES
-                for directory in entry_path.parts
-            ):
-                continue
-
-            uncompressed_size += entry.file_size
-
-            if entry.is_dir():
-                continue
-
-            if entry_path.suffix.lower() in ALLOWED_EXTENSIONS - {".zip"}:
-                source_files.append(normalized_name)
-
-        if uncompressed_size > MAX_ARCHIVE_SIZE:
-            raise HTTPException(
-                status_code=413,
-                detail="Le contenu décompressé dépasse la limite autorisée",
-            )
-
-        return {
-            "analysis_id": "temporary-id",
-            "filename": filename,
-            "status": "completed",
-            "summary": {
-                "risk_level": "unknown",
-                "score": 0,
-            },
-            "findings": [],
-            "metadata": {
-                "archive": True,
-                "file_count": len(source_files),
-                "files": source_files,
-                "uncompressed_size": uncompressed_size,
-            },
-        }
-
-    decoded_content = content.decode("utf-8", errors="replace")
+        representation = _run_repomix(project_dir, output_format)
 
     return {
         "analysis_id": "temporary-id",
         "filename": filename,
         "status": "completed",
+        "representation": representation,
+        "representation_format": output_format,
         "summary": {
             "risk_level": "unknown",
             "score": 0,
         },
         "findings": [],
         "metadata": {
-            "content_length": len(decoded_content),
+            "archive": extension == ".zip",
+            "file_count": len(source_files),
+            "files": source_files,
             "content_type": file.content_type,
         },
     }
