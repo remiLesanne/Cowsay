@@ -15,3 +15,20 @@ export async function fetchFromApi(endpoint: string, options: RequestInit = {}) 
 
   return response.json();
 }
+
+export async function analyzeFile(file: File, outputFormat: 'xml' | 'markdown' = 'xml') {
+  const formData = new FormData();
+  formData.append('file', file);
+
+  const response = await fetch(`${API_URL}/api/v1/analyses?output_format=${outputFormat}`, {
+    method: 'POST',
+    body: formData,
+  });
+
+  if (!response.ok) {
+    const error = await response.json().catch(() => null);
+    throw new Error(error?.detail || 'Impossible d’analyser le fichier.');
+  }
+
+  return response.json();
+}
