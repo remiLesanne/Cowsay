@@ -1,9 +1,11 @@
 'use client';
 
 import { ChangeEvent, DragEvent, useRef, useState } from 'react';
+import { useRouter } from 'next/navigation';
+import { analyzeFile } from './lib/api';
 
-const ACCEPTED_EXTENSIONS = ['.py', '.js', '.ts', '.tsx', '.jsx', '.java', '.go', '.rs', '.php', '.rb', '.c', '.cpp', '.cs', '.xml', '.md'];
-const ACCEPTED_LABEL = 'Code, XML ou Markdown';
+const ACCEPTED_EXTENSIONS = ['.py', '.js', '.ts', '.tsx', '.jsx', '.java', '.go', '.rs', '.php', '.rb', '.c', '.cpp', '.cs', '.xml', '.md', '.zip'];
+const ACCEPTED_LABEL = 'Code, XML, Markdown ou ZIP';
 const MAX_FILE_SIZE = 10 * 1024 * 1024;
 
 function FileCodeIcon() {
@@ -19,10 +21,12 @@ function CheckIcon() {
 }
 
 export default function Home() {
+  const router = useRouter();
   const inputRef = useRef<HTMLInputElement>(null);
   const [file, setFile] = useState<File | null>(null);
   const [isDragging, setIsDragging] = useState(false);
   const [message, setMessage] = useState('');
+  const [isAnalysing, setIsAnalysing] = useState(false);
 
   const isAccepted = (candidate: File) => {
     const extension = `.${candidate.name.split('.').pop()?.toLowerCase()}`;
@@ -33,7 +37,7 @@ export default function Home() {
     if (!candidate) return;
     if (!isAccepted(candidate)) {
       setFile(null);
-      setMessage('Ce format n’est pas pris en charge. Ajoutez un fichier de code, XML ou Markdown.');
+      setMessage('Ce format n’est pas pris en charge. Ajoutez un fichier de code, XML, Markdown ou ZIP.');
       return;
     }
     if (candidate.size > MAX_FILE_SIZE) {
@@ -58,6 +62,38 @@ export default function Home() {
 
   const formatSize = (size: number) => size < 1024 * 1024 ? `${Math.max(1, Math.round(size / 1024))} Ko` : `${(size / (1024 * 1024)).toFixed(1)} Mo`;
 
+  const openAnalysis = async () => {
+    if (!file || isAnalysing) return;
+
+    setIsAnalysing(true);
+    try {
+      if (file.name.toLowerCase().endsWith('.zip')) {
+        const analysisResult = await analyzeFile(file);
+        sessionStorage.setItem('ai-risk-check-file', JSON.stringify({
+          name: file.name,
+          size: file.size,
+          type: file.type,
+          content: '',
+          analysisResult,
+        }));
+        router.push('/analyse');
+        return;
+      }
+
+      const content = await file.text();
+      sessionStorage.setItem('ai-risk-check-file', JSON.stringify({
+        name: file.name,
+        size: file.size,
+        type: file.type,
+        content,
+      }));
+      router.push('/analyse');
+    } catch {
+      setMessage('Impossible de lire ce fichier.');
+      setIsAnalysing(false);
+    }
+  };
+
   return (
     <main className="min-h-screen bg-[#f8fafc] text-slate-900">
       <header className="border-b border-slate-200/80 bg-white">
@@ -80,7 +116,7 @@ export default function Home() {
           {message && <p className="px-2 pt-3 text-left text-sm text-rose-600">{message}</p>}
         </div>
 
-        <button className="mt-6 inline-flex h-12 w-full items-center justify-center rounded-lg bg-[#173f5f] px-7 text-sm font-semibold text-white transition hover:bg-[#12344f] disabled:cursor-not-allowed disabled:bg-slate-300 sm:w-auto" disabled={!file} type="button">Lancer l’analyse</button>
+        <button className="mt-6 inline-flex h-12 w-full items-center justify-center rounded-lg bg-[#173f5f] px-7 text-sm font-semibold text-white transition hover:bg-[#12344f] disabled:cursor-not-allowed disabled:bg-slate-300 sm:w-auto" disabled={!file || isAnalysing} onClick={openAnalysis} type="button">{isAnalysing ? 'Préparation…' : 'Lancer l’analyse'}</button>
         <p className="mt-5 text-xs text-slate-400">Vos fichiers sont utilisés uniquement pour cette analyse.</p>
       </section>
     </main>
