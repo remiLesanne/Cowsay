@@ -6,7 +6,10 @@ import { resumeComplianceCheck } from '../lib/api';
 
 type UnresolvedQuestion = {
   field_id: string;
-  type: 'radio' | 'checkbox' | 'text';
+  // The checker form has other free-text-like input kinds too (e.g. "email");
+  // anything without `options` is rendered as a plain text input, so this is
+  // intentionally not a closed union.
+  type: 'radio' | 'checkbox' | string;
   question: string;
   reasoning: string;
   options?: string[];
@@ -196,7 +199,7 @@ export default function AnalysePage() {
                         </div>
                       )}
 
-                      {item.type === 'text' && (
+                      {item.type !== 'radio' && item.type !== 'checkbox' && (
                         <input
                           className="mt-3 block w-full rounded-md border border-amber-300 px-3 py-2 text-sm"
                           onChange={(event) => setTextAnswer(item.field_id, event.target.value)}

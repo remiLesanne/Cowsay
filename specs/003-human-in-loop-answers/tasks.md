@@ -97,7 +97,32 @@ result, without re-sending the file.
       separately tested — same code path (`get_session` returns None past
       `expires_at`), but the timing itself wasn't exercised
 
-**Checkpoint**: both user stories validated.
+**Checkpoint**: both user stories validated — including a genuine live run against
+`ZAI_API_KEY` + the real checker site (not just mocks): a movie-review test project went
+from an initial result with an unresolved "Entity type" question, through an invalid-answer
+rejection (400, no browser run), to a resumed run that reached
+`is_complete: true` with a real recommendation ("Out of scope... Article 2"). Bugs found
+and fixed along the way, all pre-existing in specs 001/002 and only surfaced by this
+live test (not introduced by specs 003):
+
+- `code_index.py` `ProjectIndex.query`: a retrieval call crashed the whole request once
+  (`TypeError` from a `None` embedding inside llama-index's similarity computation, not
+  reproduced in isolation) — now caught and treated as "no relevant chunks found"
+  instead of a 500, since that's already a valid, handled state per FR-005.
+- `main.py` `_run_repomix`: `subprocess.run(..., text=True)` decoded Repomix's UTF-8
+  stdout using Windows' default `cp1252` locale, crashing on any accented character or
+  emoji in the project. Fixed with explicit `encoding="utf-8", errors="replace"`.
+- `compliance_agent.py` `GET_VISIBLE_FIELDS_JS`: was scanning the page's "email me my
+  results" opt-in field as if it were a compliance question (type `"email"`, blank
+  question text) — excluded, it's unrelated to the AI Act questionnaire.
+- Frontend `UnresolvedQuestion.type` widened from a closed `'radio'|'checkbox'|'text'`
+  union (the real form's `text`/`textarea` variants weren't all covered) to render any
+  non-choice type as a text input.
+
+**Known remaining issue, not fixed**: at least one checkbox question (Annex I product
+category list) still returns an empty `question` string — the DOM-scraping heuristic in
+`GET_VISIBLE_FIELDS_JS` doesn't find its heading in some page layouts. Cosmetic (the
+`field_id`/`type`/`options` are still correct and answerable) but should be improved.
 
 ---
 

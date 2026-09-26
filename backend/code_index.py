@@ -1,6 +1,9 @@
+import logging
 import re
 from dataclasses import dataclass
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
 
 from llama_index.core import Document, VectorStoreIndex
 from llama_index.core.retrievers import VectorIndexRetriever
@@ -89,7 +92,18 @@ class ProjectIndex:
         if self._retriever is None:
             return RetrievedContext(question=question, chunks=[])
 
-        nodes = self._retriever.retrieve(question)
+        # Retrieval is best-effort: a failure here (observed once, non-reproducibly,
+        # as a None embedding inside llama-index's similarity computation) must
+        # degrade to "nothing found" rather than crash the whole compliance check —
+        # the LLM already handles an empty RetrievedContext as a normal low-confidence
+        # case (see _ask_llm_for_answer / as_prompt_text), so this is a safe fallback,
+        # not a silent correctness bug.
+        try:
+            nodes = self._retriever.retrieve(question)
+        except Exception:
+            logger.exception("Retrieval failed for question %r; falling back to no context", question)
+            return RetrievedContext(question=question, chunks=[])
+
         chunks = [
             CodeChunk(file_path=node.metadata.get("file_path", ""), content=node.get_content())
             for node in nodes

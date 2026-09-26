@@ -64,12 +64,29 @@ text, e.g. policy doc contents). Runs Repomix, then the compliance agent.
 Returns:
 ```json
 {
+  "session_id": "a1b2c3...",
   "is_complete": true,
   "results_text": "<the checker's own recommendation, as plain text>",
   "questions_answered": 6,
-  "needs_human_input": [{"question": "...", "reasoning": "..."}]
+  "needs_human_input": [
+    {"field_id": "wsf-1-field-57-row-1", "type": "radio", "question": "...",
+     "reasoning": "...", "options": ["Provider", "Deployer", "..."]}
+  ]
 }
 ```
+
+### `POST /api/v1/compliance-check/{session_id}/answer`
+Resume a check with human-provided answers, without re-uploading the file
+(reuses the code index cached from the first call — see
+`specs/003-human-in-loop-answers/`). Body:
+```json
+{"answers": [{"field_id": "wsf-1-field-57-row-1", "value": "Provider"}]}
+```
+`value` is a string for `radio`/text-like fields, a string array for
+`checkbox`. Returns the same shape as the original endpoint. `400` if a
+multiple-choice value isn't one of that question's real options (before any
+browser automation runs); `404` if `session_id` is unknown or its 30-minute
+TTL expired.
 
 ### `GET /health`
 Liveness check.
@@ -159,26 +176,37 @@ Done:
 - Retrieval-based code context (`code_index.py`, see
   `specs/002-rag-code-retrieval/`): each checker question is answered from
   the code actually relevant to it (found via local embeddings), not a
-  fixed-size prefix of the project — validated on a ~100KB synthetic project
-  with a fact placed past the old truncation point. **Not fully validated
-  end-to-end** (no `ZAI_API_KEY` available while building this — someone with
-  the key should re-run `specs/002-rag-code-retrieval/quickstart.md` in full).
+  fixed-size prefix of the project. **Validated live end-to-end** against
+  the real site + a real LLM call (2026-09-26) — see
+  `specs/003-human-in-loop-answers/tasks.md` Phase 3 checkpoint for what that
+  run found and fixed (a retrieval crash now degrades gracefully instead of
+  500ing, a Windows encoding bug in the Repomix subprocess call, and a bogus
+  "email" field that was being scanned as a compliance question).
+- Human-in-the-loop answers (`session_store.py`, see
+  `specs/003-human-in-loop-answers/`): unresolved questions come back with
+  their real options; a caller can answer and resume without re-uploading the
+  file (the code index is cached server-side, in-memory, 30min TTL); an
+  invalid multiple-choice answer is rejected before any browser automation
+  runs. Frontend renders options as radio/checkbox/text inputs.
 
 Not done yet (from the original brief):
 - Cross-checking the checker's recommendation against the actual AI Act
   article text (the brief asks the agent to independently verify which
   article applies, not just trust the checker's own output).
-- A structured "summary of the verification" + explicit missing-info report
-  (`needs_human_input` exists but is raw, not written up).
-- Polish on the frontend compliance-check flow. The main upload flow
-  (`frontend/app/page.tsx` → `/analyse`) now calls `/api/v1/compliance-check`
-  directly and displays `results_text` + `needs_human_input`; it's functional
-  but not visually polished. `frontend/app/compliance/page.tsx` is a separate
-  bare-bones page for quick API-only testing (company name/context fields,
-  raw result). `/api/v1/analyses` (Repomix-only output) is no longer used by
-  any page but still exists as an endpoint.
-- No automated tests yet for either backend endpoint.
+- A structured "summary of the verification" report (raw `needs_human_input`
+  now includes options; a human-readable write-up is still not built).
+- Visual polish on the frontend compliance-check flow — functional, not
+  designed. `frontend/app/compliance/page.tsx` is a separate bare-bones page
+  for quick API-only testing. `/api/v1/analyses` (Repomix-only output) is no
+  longer used by any page but still exists as an endpoint.
+- A cosmetic DOM-scraping gap: at least one checkbox question's `question`
+  text comes back empty (its `field_id`/`options` are still correct and
+  answerable) — see `specs/003-human-in-loop-answers/tasks.md`.
+- No automated tests yet for any backend endpoint.
 - `ZAI_API_KEY` is not wired into the ECS task definition / CI secrets.
+- Session cache (`session_store.py`) is in-memory/single-process — lost on
+  restart, doesn't scale beyond one instance (documented trade-off, not an
+  oversight — see `specs/003-human-in-loop-answers/research.md`).
 - No database or auth: no user model, DB client, or `DATABASE_URL` usage
   anywhere in `backend/` yet, despite being part of the target architecture.
 - True 500MB-project support: upload size limits (`MAX_FILE_SIZE` etc. in

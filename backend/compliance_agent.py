@@ -27,7 +27,7 @@ DOM_SETTLE_TIMEOUT_MS = 500
 GET_VISIBLE_FIELDS_JS = """
 () => {
     function extractQuestion(el) {
-        if (['text', 'textarea', 'email'].includes(el.dataset.type)) {
+        if (['text', 'textarea'].includes(el.dataset.type)) {
             const label = el.querySelector('label');
             if (label) return label.innerText.trim();
         }
@@ -38,7 +38,7 @@ GET_VISIBLE_FIELDS_JS = """
             if (node.dataset && node.dataset.type === 'texteditor') {
                 parts.unshift(node.innerText.trim());
                 collected++;
-            } else if (node.dataset && ['radio', 'checkbox', 'text', 'textarea', 'email'].includes(node.dataset.type)) {
+            } else if (node.dataset && ['radio', 'checkbox', 'text', 'textarea'].includes(node.dataset.type)) {
                 break;
             }
             node = node.previousElementSibling;
@@ -49,7 +49,11 @@ GET_VISIBLE_FIELDS_JS = """
     const results = [];
     document.querySelectorAll('.wsf-field-wrapper').forEach(el => {
         const type = el.dataset.type;
-        if (!['radio', 'checkbox', 'text', 'textarea', 'email'].includes(type)) return;
+        // "email" is excluded on purpose: the only email-type field on this page
+        // is the "email me my results" opt-in near the bottom, unrelated to the
+        // AI Act questionnaire itself — scanning it produced a bogus unresolved
+        // "question" with no real text (discovered via live testing 2026-09-26).
+        if (!['radio', 'checkbox', 'text', 'textarea'].includes(type)) return;
         if (el.offsetParent === null) return;
 
         const question = extractQuestion(el);

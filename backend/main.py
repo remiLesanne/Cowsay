@@ -94,6 +94,8 @@ def _run_repomix(project_dir: Path, output_format: Literal["xml", "markdown"]):
             cwd=project_dir,
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=REPOMIX_TIMEOUT_SECONDS,
             check=False,
         )
