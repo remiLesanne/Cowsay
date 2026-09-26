@@ -22,10 +22,10 @@ ALLOWED_EXTENSIONS = {
     ".zip",
 }
 MAX_FILE_SIZE = 10 * 1024 * 1024
-MAX_ZIP_FILE_SIZE = 50 * 1024 * 1024
-MAX_ARCHIVE_SIZE = 50 * 1024 * 1024
-MAX_ARCHIVE_FILES = 1000
-REPOMIX_TIMEOUT_SECONDS = 60
+MAX_ZIP_FILE_SIZE = 500 * 1024 * 1024
+MAX_ARCHIVE_SIZE = 500 * 1024 * 1024
+MAX_ARCHIVE_FILES = 5000
+REPOMIX_TIMEOUT_SECONDS = 300
 REPOMIX_BIN = Path(__file__).parent / "node_modules" / ".bin" / "repomix"
 IGNORED_ARCHIVE_DIRECTORIES = {
     "node_modules",
@@ -177,7 +177,7 @@ async def _convert_upload_to_repomix(
         raise HTTPException(
             status_code=413,
             detail=(
-                "Archive ZIP trop volumineuse (50 Mo maximum)"
+                "Archive ZIP trop volumineuse (500 Mo maximum)"
                 if extension == ".zip"
                 else "Fichier trop volumineux (10 Mo maximum)"
             ),

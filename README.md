@@ -161,12 +161,13 @@ Not done yet (from the original brief):
   article applies, not just trust the checker's own output).
 - A structured "summary of the verification" + explicit missing-info report
   (`needs_human_input` exists but is raw, not written up).
-- Proper frontend UI for the compliance-check flow. The frontend already has a
-  full upload flow (`frontend/app/page.tsx` → `/analyse`) but it's wired to
-  `/api/v1/analyses` (Repomix only). `frontend/app/compliance/page.tsx` is a
-  bare-bones test page for `/api/v1/compliance-check` (built to validate
-  `specs/002-rag-code-retrieval/` locally) — functional but not styled/
-  integrated into the main flow.
+- Polish on the frontend compliance-check flow. The main upload flow
+  (`frontend/app/page.tsx` → `/analyse`) now calls `/api/v1/compliance-check`
+  directly and displays `results_text` + `needs_human_input`; it's functional
+  but not visually polished. `frontend/app/compliance/page.tsx` is a separate
+  bare-bones page for quick API-only testing (company name/context fields,
+  raw result). `/api/v1/analyses` (Repomix-only output) is no longer used by
+  any page but still exists as an endpoint.
 - No automated tests yet for either backend endpoint.
 - `ZAI_API_KEY` is not wired into the ECS task definition / CI secrets.
 - No database or auth: no user model, DB client, or `DATABASE_URL` usage

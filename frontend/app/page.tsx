@@ -2,12 +2,12 @@
 
 import { ChangeEvent, DragEvent, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { analyzeFile } from './lib/api';
+import { runComplianceCheck } from './lib/api';
 
 const ACCEPTED_EXTENSIONS = ['.py', '.js', '.ts', '.tsx', '.jsx', '.java', '.go', '.rs', '.php', '.rb', '.c', '.cpp', '.cs', '.xml', '.md', '.zip'];
 const ACCEPTED_LABEL = 'Code, XML, Markdown ou ZIP';
 const MAX_CODE_FILE_SIZE = 10 * 1024 * 1024;
-const MAX_ZIP_FILE_SIZE = 50 * 1024 * 1024;
+const MAX_ZIP_FILE_SIZE = 500 * 1024 * 1024;
 
 function FileCodeIcon() {
   return <svg aria-hidden="true" className="h-7 w-7" fill="none" viewBox="0 0 24 24"><path d="m8.5 8-4 4 4 4M15.5 8l4 4-4 4M13.5 5l-3 14" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.7" /></svg>;
@@ -46,7 +46,7 @@ export default function Home() {
 
     if (candidate.size > maxFileSize) {
       setFile(null);
-      setMessage(`Ce fichier dépasse la taille maximale de ${isZip ? '50' : '10'} Mo.`);
+      setMessage(`Ce fichier dépasse la taille maximale de ${isZip ? '500' : '10'} Mo.`);
       return;
     }
     setMessage('');
@@ -70,32 +70,17 @@ export default function Home() {
     if (!file || isAnalysing) return;
 
     setIsAnalysing(true);
+    setMessage('');
     try {
-      if (file.name.toLowerCase().endsWith('.zip')) {
-        const analysisResult = await analyzeFile(file);
-        const displayResult = { ...analysisResult };
-        delete displayResult.representation;
-        sessionStorage.setItem('ai-risk-check-file', JSON.stringify({
-          name: file.name,
-          size: file.size,
-          type: file.type,
-          content: '',
-          analysisResult: displayResult,
-        }));
-        router.push('/analyse');
-        return;
-      }
-
-      const content = await file.text();
-      sessionStorage.setItem('ai-risk-check-file', JSON.stringify({
+      const result = await runComplianceCheck(file);
+      sessionStorage.setItem('ai-risk-check-result', JSON.stringify({
         name: file.name,
         size: file.size,
-        type: file.type,
-        content,
+        result,
       }));
       router.push('/analyse');
-    } catch {
-      setMessage('Impossible de lire ce fichier.');
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : 'Impossible d’analyser ce fichier.');
       setIsAnalysing(false);
     }
   };
@@ -117,12 +102,12 @@ export default function Home() {
         <div className="mt-12 rounded-2xl border border-slate-200 bg-white p-3 shadow-[0_12px_40px_rgba(15,23,42,0.05)] sm:p-4">
           <div aria-label="Zone de dépôt de fichier" className={`flex min-h-[270px] cursor-pointer flex-col items-center justify-center rounded-xl border-2 border-dashed px-6 py-10 transition-colors ${isDragging ? 'border-[#277da1] bg-[#f0f9fc]' : 'border-slate-300 bg-slate-50/60 hover:border-[#5a9db7] hover:bg-[#f7fcfd]'}`} onClick={() => inputRef.current?.click()} onDragEnter={(event) => { event.preventDefault(); setIsDragging(true); }} onDragOver={(event) => event.preventDefault()} onDragLeave={(event) => { if (event.currentTarget === event.target) setIsDragging(false); }} onDrop={handleDrop} role="button" tabIndex={0} onKeyDown={(event) => { if (event.key === 'Enter' || event.key === ' ') inputRef.current?.click(); }}>
             <input ref={inputRef} className="hidden" type="file" accept={ACCEPTED_EXTENSIONS.join(',')} onChange={handleInput} />
-            {file ? <><div className="mb-5 flex h-14 w-14 items-center justify-center rounded-full bg-emerald-50 text-emerald-600"><CheckIcon /></div><p className="max-w-full truncate text-base font-medium text-slate-800">{file.name}</p><p className="mt-1 text-sm text-slate-500">{formatSize(file.size)} · Fichier prêt à être analysé</p><button className="mt-5 text-sm font-medium text-[#277da1] hover:underline" onClick={(event) => { event.stopPropagation(); inputRef.current?.click(); }} type="button">Choisir un autre fichier</button></> : <><div className="mb-5 flex h-14 w-14 items-center justify-center rounded-full bg-[#e8f4f7] text-[#277da1]"><UploadIcon /></div><p className="text-base font-medium text-slate-700">Glissez-déposez votre fichier ici</p><p className="mt-2 text-sm text-slate-500">ou <span className="font-medium text-[#277da1]">parcourez vos fichiers</span></p><p className="mt-6 text-xs text-slate-400">{ACCEPTED_LABEL} · 50 Mo maximum</p></>}
+            {file ? <><div className="mb-5 flex h-14 w-14 items-center justify-center rounded-full bg-emerald-50 text-emerald-600"><CheckIcon /></div><p className="max-w-full truncate text-base font-medium text-slate-800">{file.name}</p><p className="mt-1 text-sm text-slate-500">{formatSize(file.size)} · Fichier prêt à être analysé</p><button className="mt-5 text-sm font-medium text-[#277da1] hover:underline" onClick={(event) => { event.stopPropagation(); inputRef.current?.click(); }} type="button">Choisir un autre fichier</button></> : <><div className="mb-5 flex h-14 w-14 items-center justify-center rounded-full bg-[#e8f4f7] text-[#277da1]"><UploadIcon /></div><p className="text-base font-medium text-slate-700">Glissez-déposez votre fichier ici</p><p className="mt-2 text-sm text-slate-500">ou <span className="font-medium text-[#277da1]">parcourez vos fichiers</span></p><p className="mt-6 text-xs text-slate-400">{ACCEPTED_LABEL} · 500 Mo maximum</p></>}
           </div>
           {message && <p className="px-2 pt-3 text-left text-sm text-rose-600">{message}</p>}
         </div>
 
-        <button className="mt-6 inline-flex h-12 w-full items-center justify-center rounded-lg bg-[#173f5f] px-7 text-sm font-semibold text-white transition hover:bg-[#12344f] disabled:cursor-not-allowed disabled:bg-slate-300 sm:w-auto" disabled={!file || isAnalysing} onClick={openAnalysis} type="button">{isAnalysing ? 'Préparation…' : 'Lancer l’analyse'}</button>
+        <button className="mt-6 inline-flex h-12 w-full items-center justify-center rounded-lg bg-[#173f5f] px-7 text-sm font-semibold text-white transition hover:bg-[#12344f] disabled:cursor-not-allowed disabled:bg-slate-300 sm:w-auto" disabled={!file || isAnalysing} onClick={openAnalysis} type="button">{isAnalysing ? 'Analyse en cours (jusqu’à 2 min)…' : 'Lancer l’analyse'}</button>
         <p className="mt-5 text-xs text-slate-400">Vos fichiers sont utilisés uniquement pour cette analyse.</p>
       </section>
     </main>
