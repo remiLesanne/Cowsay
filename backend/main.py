@@ -9,11 +9,13 @@ from typing import Literal
 from dotenv import load_dotenv
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
 from starlette.responses import Response
 
 load_dotenv()  # must run before compliance_agent reads ZAI_* at import time
 
-from compliance_agent import run_compliance_check
+import session_store
+from compliance_agent import run_compliance_check, run_compliance_check_with_index
 
 app = FastAPI()
 
@@ -241,6 +243,19 @@ async def create_analysis(
     }
 
 
+def _index_unresolved(unresolved: list[dict]) -> dict[str, dict]:
+    return {item["field_id"]: item for item in unresolved if "field_id" in item}
+
+
+class AnswerItem(BaseModel):
+    field_id: str
+    value: str | list[str]
+
+
+class AnswerRequest(BaseModel):
+    answers: list[AnswerItem]
+
+
 @app.post("/api/v1/compliance-check")
 async def create_compliance_check(
     file: UploadFile = File(...),
@@ -257,17 +272,70 @@ async def create_compliance_check(
     representation, source_files, _ = await _convert_upload_to_repomix(file, "markdown")
 
     extra_context = f"Company name: {company_name}\n{company_context or ''}".strip()
-    result = await run_compliance_check(
+    result, project_index = await run_compliance_check(
         code_context=representation,
         system_name=company_name,
         extra_context=extra_context,
     )
 
+    session_id = session_store.create_session(project_index, company_name, extra_context)
+    session = session_store.get_session(session_id)
+    session.unresolved_by_field_id = _index_unresolved(result["needs_human_input"])
+
     return {
+        "session_id": session_id,
         "filename": file.filename or "",
         "file_count": len(source_files),
         **result,
     }
+
+
+@app.post("/api/v1/compliance-check/{session_id}/answer")
+async def answer_compliance_check(session_id: str, body: AnswerRequest):
+    """Resume a compliance check with human-provided answers.
+
+    Reuses the ProjectIndex built on the first call (no Repomix re-run, no
+    re-embedding — see specs/003-human-in-loop-answers/research.md) and skips
+    the LLM entirely for fields the human has now answered. Multiple-choice
+    answers are validated against the question's real options before any
+    browser automation runs, so a bad value fails fast instead of wasting a
+    30-90s Playwright run.
+    """
+    session = session_store.get_session(session_id)
+    if session is None:
+        raise HTTPException(
+            status_code=404,
+            detail="Session inconnue ou expirée, merci de renvoyer le fichier",
+        )
+
+    for answer in body.answers:
+        unresolved = session.unresolved_by_field_id.get(answer.field_id)
+        if unresolved is None or unresolved["type"] not in ("radio", "checkbox"):
+            continue
+        valid_options = {option.strip().lower() for option in unresolved["options"]}
+        submitted = answer.value if isinstance(answer.value, list) else [answer.value]
+        invalid = [value for value in submitted if value.strip().lower() not in valid_options]
+        if invalid:
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "message": f"Réponse invalide pour « {unresolved['question']} »",
+                    "invalid_values": invalid,
+                    "valid_options": unresolved["options"],
+                },
+            )
+        session.human_answers[answer.field_id] = answer.value
+
+    result = await run_compliance_check_with_index(
+        session.project_index,
+        system_name=session.system_name,
+        extra_context=session.extra_context,
+        human_answers=session.human_answers,
+    )
+    session.unresolved_by_field_id = _index_unresolved(result["needs_human_input"])
+
+    return {"session_id": session_id, **result}
+
 
 @app.get("/health")
 def health_check():

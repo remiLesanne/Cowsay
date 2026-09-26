@@ -12,7 +12,7 @@
 
 ## Phase 1: Setup
 
-- [ ] T001 Add the `uuid` usage needed for session ids (stdlib — no new dependency;
+- [X] T001 Add the `uuid` usage needed for session ids (stdlib — no new dependency;
       confirm nothing extra is needed in `backend/requirements.txt`)
 
 ---
@@ -21,17 +21,19 @@
 
 **Purpose**: the session cache both user stories depend on
 
-- [ ] T002 Create `backend/session_store.py`: `create_session(project_index) ->
-      session_id`, `get_session(session_id) -> ComplianceSession | None` (returns None if
-      missing or past `expires_at`, per data-model.md Validation rules), `touch(session_id)`
-      to refresh `expires_at` on access, TTL constant (30 min per research.md)
-- [ ] T003 In `backend/compliance_agent.py`, extend the field-scanning JS/Python path so
-      each `needs_human_input` entry also carries `field_id`, `type`, and `options` (for
-      radio/checkbox) per data-model.md `UnresolvedQuestion`
-- [ ] T004 In `backend/compliance_agent.py`, add a `human_answers: dict[str, str | list[str]]
-      | None` parameter to `run_compliance_check`; when the loop encounters a field whose
-      id is in `human_answers`, apply that value directly via `_apply_answer` and record it
-      as answered WITHOUT calling `_ask_llm_for_answer` (FR-004)
+- [X] T002 Create `backend/session_store.py`: `create_session(project_index,
+      system_name, extra_context) -> session_id`, `get_session(session_id) ->
+      ComplianceSession | None` (returns None if missing/expired, and refreshes
+      `expires_at` on access inline rather than a separate `touch()` — same effect,
+      one less function), TTL constant (30 min per research.md)
+- [X] T003 In `backend/compliance_agent.py`, `_describe_unresolved_field` now builds
+      each `needs_human_input` entry with `field_id`, `type`, `question`, `reasoning`,
+      and `options` (for radio/checkbox) per data-model.md `UnresolvedQuestion`
+- [X] T004 `run_compliance_check` split into `run_compliance_check` (builds a fresh
+      index, returns `(result, project_index)`) + `run_compliance_check_with_index`
+      (takes an existing index + optional `human_answers`); when a field's id is in
+      `human_answers`, `_human_answer_to_field_answer` builds a synthetic
+      `confidence: "human"` answer and `_ask_llm_for_answer` is skipped entirely (FR-004)
 
 **Checkpoint**: session cache exists; `run_compliance_check` can accept pre-supplied
 answers, but nothing wires a session id through the API yet.
@@ -47,15 +49,16 @@ result, without re-sending the file.
 
 ### Implementation for User Story 1
 
-- [ ] T005 [US1] In `backend/main.py`'s `create_compliance_check`, after building the
-      `ProjectIndex`, register it via `session_store.create_session(...)` and include the
-      returned `session_id` in the response (alongside the existing fields)
-- [ ] T006 [US1] Add `POST /api/v1/compliance-check/{session_id}/answer` in
-      `backend/main.py`: look up the session (404 if missing/expired, data-model.md),
-      merge the submitted answers into the session's accumulated `human_answers`, call
-      `run_compliance_check(..., human_answers=session.human_answers)` reusing
-      `session.project_index` (no Repomix, no re-embedding), return the same response
-      shape as the original endpoint including the same `session_id`
+- [X] T005 [US1] `create_compliance_check` now registers the returned `project_index`
+      via `session_store.create_session(...)` and includes `session_id` in the response
+- [X] T006 [US1] Added `POST /api/v1/compliance-check/{session_id}/answer` in
+      `backend/main.py`: looks up the session (404 if missing/expired), merges answers
+      into `session.human_answers`, calls `run_compliance_check_with_index(...)` reusing
+      `session.project_index` (no Repomix, no re-embedding), returns the same response
+      shape including `session_id`. **Verified with a scripted test** (FastAPI
+      `TestClient`, Playwright/LLM mocked out): first call returns options, invalid
+      answer → 400 without triggering the mocked resume call, valid case-insensitive
+      answer → 200 with merged `human_answers` passed through, unknown session → 404.
 - [ ] T007 [US1] In `frontend/app/lib/api.ts`, add `resumeComplianceCheck(sessionId,
       answers)` posting to the new endpoint
 - [ ] T008 [US1] In `frontend/app/analyse/page.tsx`, render each `needs_human_input` item:
@@ -81,16 +84,17 @@ result, without re-sending the file.
 
 ### Implementation for User Story 2
 
-- [ ] T011 [US2] In `backend/main.py`'s new answer endpoint, before calling
-      `run_compliance_check`, validate each submitted answer against the session's cached
-      `UnresolvedQuestion.options` for that `field_id` (case-insensitive compare, matching
-      `compliance_agent.py`'s existing `_strip_html(...).strip().lower()` normalization
-      per data-model.md); on mismatch return `400` with the question and valid options,
-      WITHOUT calling `run_compliance_check` at all (SC-002)
-- [ ] T012 [US2] Run `quickstart.md`'s invalid-answer curl scenario; confirm `400` and no
-      multi-second wait (Playwright never launches)
-- [ ] T013 [US2] Run `quickstart.md`'s expired-session scenario (or a short TTL override
-      for testing); confirm a clear `404`-style error, not a silent wrong/empty result
+- [X] T011 [US2] Validation added in `answer_compliance_check`: checks each submitted
+      value against `session.unresolved_by_field_id[field_id]["options"]`
+      (case-insensitive), returns `400` with the question + valid options before
+      `run_compliance_check_with_index` is ever called (SC-002)
+- [X] T012 [US2] Verified via the same scripted test (see T006) — invalid answer got
+      `400` and the mocked resume function's call count stayed at 1 (only the first
+      call), proving Playwright/LLM work is skipped entirely
+- [~] T013 [US2] Partially verified: unknown `session_id` → 404 confirmed by script.
+      True TTL-expiry (waiting out the 30 min, or a shortened TTL override) NOT
+      separately tested — same code path (`get_session` returns None past
+      `expires_at`), but the timing itself wasn't exercised
 
 **Checkpoint**: both user stories validated.
 

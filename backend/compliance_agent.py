@@ -7,7 +7,7 @@ import httpx
 from fastapi import HTTPException
 from playwright.async_api import async_playwright
 
-from code_index import build_project_index
+from code_index import ProjectIndex, build_project_index
 
 COMPLIANCE_CHECKER_URL = (
     "https://artificialintelligenceact.eu/assessment/eu-ai-act-compliance-checker/embedded/"
@@ -158,6 +158,25 @@ async def _ask_llm_for_answer(field: dict, retrieved_code_text: str, extra_conte
         return {"selected": [], "text": "", "confidence": "low", "reasoning": "Réponse du modèle illisible"}
 
 
+def _human_answer_to_field_answer(field: dict, value: str | list[str]) -> dict:
+    if field["type"] in ("radio", "checkbox"):
+        selected = value if isinstance(value, list) else [value]
+        return {"selected": selected, "confidence": "human", "reasoning": "Réponse fournie par l’utilisateur"}
+    return {"text": value if isinstance(value, str) else "", "confidence": "human", "reasoning": "Réponse fournie par l’utilisateur"}
+
+
+def _describe_unresolved_field(field: dict, answer: dict) -> dict:
+    described = {
+        "field_id": field["id"],
+        "type": field["type"],
+        "question": _strip_html(field["question"]),
+        "reasoning": answer.get("reasoning", ""),
+    }
+    if field["type"] in ("radio", "checkbox"):
+        described["options"] = [_strip_html(option["value"]) for option in field["options"]]
+    return described
+
+
 async def _apply_answer(page, field: dict, answer: dict) -> None:
     if field["type"] in ("radio", "checkbox"):
         selected = {value.strip().lower() for value in answer.get("selected", [])}
@@ -174,6 +193,24 @@ async def run_compliance_check(
     code_context: str,
     system_name: str | None = None,
     extra_context: str | None = None,
+) -> tuple[dict, ProjectIndex]:
+    """Builds a fresh ProjectIndex from code_context, then runs the check.
+
+    Returns (result, project_index) so the caller (main.py) can cache the index
+    for a later resume round via run_compliance_check_with_index — rebuilding it
+    from scratch on every human-answer round would re-pay the indexing cost
+    spec 002's research.md already measured as significant for large projects.
+    """
+    project_index = await asyncio.to_thread(build_project_index, code_context)
+    result = await run_compliance_check_with_index(project_index, system_name, extra_context)
+    return result, project_index
+
+
+async def run_compliance_check_with_index(
+    project_index: ProjectIndex,
+    system_name: str | None = None,
+    extra_context: str | None = None,
+    human_answers: dict[str, str | list[str]] | None = None,
 ) -> dict:
     context_parts = []
     if system_name:
@@ -184,7 +221,6 @@ async def run_compliance_check(
 
     processed: dict[str, dict] = {}
     unresolved: list[dict] = []
-    project_index = await asyncio.to_thread(build_project_index, code_context)
 
     async with async_playwright() as playwright:
         browser = await playwright.chromium.launch(headless=True)
@@ -206,21 +242,20 @@ async def run_compliance_check(
                     break
 
                 for field in new_fields:
-                    question_text = _strip_html(field["question"])
-                    retrieved = await asyncio.to_thread(project_index.query, question_text)
-                    answer = await _ask_llm_for_answer(
-                        field, retrieved.as_prompt_text(), combined_extra_context
-                    )
+                    human_value = human_answers.get(field["id"]) if human_answers else None
+                    if human_value is not None:
+                        answer = _human_answer_to_field_answer(field, human_value)
+                    else:
+                        question_text = _strip_html(field["question"])
+                        retrieved = await asyncio.to_thread(project_index.query, question_text)
+                        answer = await _ask_llm_for_answer(
+                            field, retrieved.as_prompt_text(), combined_extra_context
+                        )
                     processed[field["id"]] = answer
                     if answer.get("confidence") == "low" or (
                         field["type"] in ("radio", "checkbox") and not answer.get("selected")
                     ):
-                        unresolved.append(
-                            {
-                                "question": _strip_html(field["question"]),
-                                "reasoning": answer.get("reasoning", ""),
-                            }
-                        )
+                        unresolved.append(_describe_unresolved_field(field, answer))
                     await _apply_answer(page, field, answer)
 
                 await page.wait_for_timeout(DOM_SETTLE_TIMEOUT_MS)
