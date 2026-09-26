@@ -1,5 +1,6 @@
 import re
 from dataclasses import dataclass
+from pathlib import Path
 
 from llama_index.core import Document, VectorStoreIndex
 from llama_index.core.retrievers import VectorIndexRetriever
@@ -8,6 +9,12 @@ from llama_index.embeddings.huggingface import HuggingFaceEmbedding
 EMBEDDING_MODEL_NAME = "sentence-transformers/all-MiniLM-L6-v2"
 TOP_K_CHUNKS = 5
 MAX_CHUNK_CHARS = 4000
+
+# Explicit path rather than the library default: on a Windows Store (MSIX)
+# Python install, the default cache resolves under a sandboxed
+# Packages\...\LocalCache directory that silently fails to create
+# subdirectories, breaking the model download with a FileNotFoundError.
+EMBEDDING_CACHE_DIR = Path(__file__).parent / ".embeddings_cache"
 
 # Repomix's markdown output delimits each source file with "## File: <path>"
 # followed by a fenced code block (see backend/main.py, output_format="markdown").
@@ -19,7 +26,9 @@ _embed_model: HuggingFaceEmbedding | None = None
 def _get_embed_model() -> HuggingFaceEmbedding:
     global _embed_model
     if _embed_model is None:
-        _embed_model = HuggingFaceEmbedding(model_name=EMBEDDING_MODEL_NAME)
+        _embed_model = HuggingFaceEmbedding(
+            model_name=EMBEDDING_MODEL_NAME, cache_folder=str(EMBEDDING_CACHE_DIR)
+        )
     return _embed_model
 
 
