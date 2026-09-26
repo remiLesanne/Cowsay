@@ -5,9 +5,12 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import Literal
 
+from dotenv import load_dotenv
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.responses import Response
+
+load_dotenv()  # must run before compliance_agent reads OPENROUTER_* at import time
 
 from compliance_agent import run_compliance_check
 

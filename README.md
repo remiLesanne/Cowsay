@@ -82,7 +82,7 @@ cd backend
 python -m venv .venv && source .venv/bin/activate   # Windows: .venv\Scripts\Activate.ps1
 pip install -r requirements.txt
 python -m playwright install --with-deps chromium   # once, for compliance-check
-export OPENROUTER_API_KEY=...                        # for compliance-check
+cp .env.example .env && edit .env with your key     # loaded automatically at startup
 uvicorn main:app --reload --port 8000
 ```
 
