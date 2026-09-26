@@ -21,6 +21,8 @@ type AnalysisResult = {
     score: number;
   };
   findings: Array<unknown>;
+  representation?: string;
+  representation_format?: 'xml' | 'markdown';
   metadata: {
     content_length?: number;
     content_type?: string;
@@ -76,7 +78,7 @@ export default function AnalysePage() {
           );
 
           setIsAnalysing(true);
-          analyzeFile(reconstructedFile)
+          analyzeFile(reconstructedFile, 'markdown')
             .then((analysisResult: AnalysisResult) => {
               if (!cancelled) setResult(analysisResult);
             })
@@ -136,10 +138,16 @@ export default function AnalysePage() {
           {!file && <Link className="font-medium text-[#277da1] hover:underline" href="/">Sélectionner un fichier</Link>}
         </div>
 
-        {result && (
-          <pre className="mt-6 overflow-x-auto rounded-xl border border-slate-200 bg-white p-5 text-left text-sm text-slate-700">
-            {JSON.stringify(result, null, 2)}
-          </pre>
+        {result?.representation && (
+          <section className="mt-6 overflow-hidden rounded-xl border border-slate-200 bg-white">
+            <div className="flex items-center justify-between border-b border-slate-200 px-5 py-4">
+              <h2 className="text-sm font-semibold text-slate-800">Sortie Repomix — Markdown</h2>
+              <span className="text-xs text-slate-400">Générée par le backend</span>
+            </div>
+            <pre className="max-h-[700px] overflow-auto whitespace-pre-wrap p-6 text-left font-mono text-[13px] leading-6 text-slate-700">
+              {result.representation}
+            </pre>
+          </section>
         )}
       </section>
     </main>

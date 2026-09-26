@@ -72,15 +72,13 @@ export default function Home() {
     setIsAnalysing(true);
     try {
       if (file.name.toLowerCase().endsWith('.zip')) {
-        const analysisResult = await analyzeFile(file);
-        const displayResult = { ...analysisResult };
-        delete displayResult.representation;
+        const analysisResult = await analyzeFile(file, 'markdown');
         sessionStorage.setItem('ai-risk-check-file', JSON.stringify({
           name: file.name,
           size: file.size,
           type: file.type,
           content: '',
-          analysisResult: displayResult,
+          analysisResult,
         }));
         router.push('/analyse');
         return;
