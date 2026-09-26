@@ -1,201 +1,129 @@
-# Cowsay
+# Cowsay — EU AI Act Compliance Checker
 
-Application web composée d’un frontend Next.js et d’une API backend FastAPI.
-Le frontend appelle l’API au chargement de la page et affiche la réponse JSON
-retournée par le backend.
+**Goal (school project, EPF 5A):** given a codebase (+ optional company info),
+automatically determine whether that project complies with the EU AI Act.
+The app fills the official Future-of-Life-Institute checker
+(https://artificialintelligenceact.eu/assessment/eu-ai-act-compliance-checker/embedded/)
+using facts extracted from the code, returns its real recommendation, and
+flags any question the AI couldn't answer so a human can fill the gap.
+Full brief: not versioned here — ask the team / check project chat if unsure.
 
-## Vue d’ensemble
+Rubric constraints that shape decisions: must have a generative-AI/agentic
+component; if using a coding harness (Claude Code etc.) must also use an
+agentic framework to avoid "vibe coding"; team works agile (tickets, PRs,
+acceptance criteria).
 
-```text
-Navigateur
-    |
-    | http://localhost:3000
-    v
-Frontend Next.js (frontend/)
-    |
-    | GET /
-    | URL définie par NEXT_PUBLIC_API_URL
-    v
-Backend FastAPI (backend/)
-    |
-    | GET /       -> message de test
-    | GET /health -> état de santé
-    v
-Déploiement AWS ECS / ECR
+## Architecture
+
+```
+Next.js frontend (frontend/)  --HTTP-->  FastAPI backend (backend/)
+                                             |
+                              /api/v1/analyses         (Repomix: code -> AI-readable text)
+                              /api/v1/compliance-check (Repomix + Playwright agent -> checker verdict)
 ```
 
-Le dépôt est organisé en deux parties :
+- `backend/main.py` — FastAPI app, CORS, both endpoints.
+- `backend/compliance_agent.py` — the compliance agent: drives a headless
+  Chromium (Playwright) through the official checker's form. The form is a
+  dynamic branching questionnaire (WS Form plugin) — questions appear as
+  earlier ones are answered, and results are computed client-side by the
+  site's own JS. **We drive the real page rather than reimplementing its
+  logic**, so the returned recommendation is guaranteed identical to what a
+  human would get — no risk of drift from a reimplementation.
+  - Loop: scan visible questions -> ask an LLM (OpenRouter) to answer each
+    from the Repomix code text + optional company context -> click/fill ->
+    repeat until no new questions appear -> scrape the "Your results" section
+    of the page as plain text.
+  - Any answer given with low confidence (or left unanswered) is collected
+    into `needs_human_input` in the response instead of being silently
+    guessed away.
+- `backend/Dockerfile` — Python + Node (for Repomix) + Playwright/Chromium.
+- Repomix (`backend/node_modules/.bin/repomix`) converts an uploaded file/zip
+  into one AI-friendly text blob; used as the "facts about the code" input to
+  both endpoints.
 
-```text
-.
-├── backend/
-│   ├── main.py             # API FastAPI et configuration CORS
-│   ├── requirements.txt    # Dépendances Python
-│   └── Dockerfile          # Image Docker du backend
-├── frontend/
-│   ├── app/page.tsx        # Page principale React
-│   ├── app/lib/api.ts      # Fonction cliente pour appeler l’API
-│   ├── package.json        # Scripts et dépendances JavaScript
-│   └── .env.exemple        # Exemple de configuration locale
-└── .github/workflows/
-    └── deploy.yml          # Déploiement automatique du backend sur AWS
-```
+## API
 
-## Fonctionnement de l’application
+### `POST /api/v1/analyses`
+Upload a file/zip (`file`), optional `output_format` (`xml`|`markdown`).
+Returns the Repomix representation of the project. No compliance logic.
 
-1. Le navigateur ouvre le frontend Next.js.
-2. `frontend/app/page.tsx` exécute `fetchFromApi('/')` au montage du composant.
-3. `frontend/app/lib/api.ts` construit l’URL à partir de `NEXT_PUBLIC_API_URL`.
-   Si cette variable n’est pas définie, l’URL utilisée est
-   `http://localhost:8000`.
-4. FastAPI reçoit la requête et renvoie un objet JSON contenant `message` et
-   `version`.
-5. Le frontend affiche cet objet dans un bloc de code. En cas d’erreur réseau
-   ou HTTP, un message d’erreur est affiché.
-
-## API backend
-
-Le backend est défini dans [`backend/main.py`](backend/main.py).
-
-### `GET /`
-
-Retourne actuellement une réponse de test semblable à :
-
+### `POST /api/v1/compliance-check`
+Upload a file/zip (`file`), optional `company_name`, `company_context` (free
+text, e.g. policy doc contents). Runs Repomix, then the compliance agent.
+Returns:
 ```json
 {
-  "message": "🔥 TEST DEPLOYMENT AWS - LE CORS ET LE CODE SONT BIEN A JOUR ! 🔥",
-  "version": "v3-debug"
+  "is_complete": true,
+  "results_text": "<the checker's own recommendation, as plain text>",
+  "questions_answered": 6,
+  "needs_human_input": [{"question": "...", "reasoning": "..."}]
 }
 ```
 
 ### `GET /health`
-
-Endpoint destiné aux vérifications de santé :
-
-```json
-{
-  "status": "healthy"
-}
-```
+Liveness check.
 
 ### CORS
+Allowed origins hardcoded in `main.py`: `localhost:3000`,
+`https://cowsay-one.vercel.app`. Add new frontend URLs there.
 
-Les requêtes provenant de ces deux origines sont autorisées :
+## Required env vars (backend)
 
-- `http://localhost:3000` pour le développement local ;
-- `https://cowsay-one.vercel.app` pour le frontend déployé.
+- `OPENROUTER_API_KEY` — required for `/api/v1/compliance-check` (LLM calls
+  go through OpenRouter, OpenAI-compatible). Free models used by the team:
+  `z-ai/glm-5.2:free`, `deepseek/deepseek-v4-flash-0731:free`.
+- `OPENROUTER_MODEL` — optional, defaults to `z-ai/glm-5.2:free`.
 
-Si le frontend est déployé sur une autre adresse, celle-ci doit être ajoutée
-dans `allow_origins` de `backend/main.py`.
-
-## Lancer le projet en local
-
-### 1. Démarrer le backend
-
-Depuis la racine du projet :
+## Run locally
 
 ```bash
 cd backend
-python -m venv .venv
-source .venv/bin/activate       # Linux/macOS
-# Windows PowerShell : .venv\Scripts\Activate.ps1
+python -m venv .venv && source .venv/bin/activate   # Windows: .venv\Scripts\Activate.ps1
 pip install -r requirements.txt
-uvicorn main:app --reload --host 0.0.0.0 --port 8000
+python -m playwright install --with-deps chromium   # once, for compliance-check
+export OPENROUTER_API_KEY=...                        # for compliance-check
+uvicorn main:app --reload --port 8000
 ```
-
-L’API est alors disponible sur <http://localhost:8000>.
-
-Tests rapides :
-
-```bash
-curl http://localhost:8000/
-curl http://localhost:8000/health
-```
-
-### 2. Démarrer le frontend
-
-Dans un autre terminal :
 
 ```bash
 cd frontend
-cp .env.exemple .env.local
-npm ci
-npm run dev
+cp .env.exemple .env.local   # set NEXT_PUBLIC_API_URL=http://localhost:8000
+npm ci && npm run dev
 ```
 
-Vérifier que `frontend/.env.local` contient :
+Docker: `cd backend && docker build -t cowsay-backend . && docker run --rm -p 8000:8000 cowsay-backend`
+(pass `-e OPENROUTER_API_KEY=...`).
 
-```env
-NEXT_PUBLIC_API_URL=http://localhost:8000
-```
+## Deployment
 
-Le frontend est disponible sur <http://localhost:3000>.
+`.github/workflows/deploy.yml` builds `backend/` on every push to `main` and
+deploys it to AWS ECS (cluster `default`, service `cowsay-backend-dcab`).
+Needs `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` GitHub secrets, and
+`OPENROUTER_API_KEY` set on the ECS task definition for compliance-check to
+work in production.
 
-Autres commandes utiles :
+## Git workflow for this repo
 
-```bash
-npm run lint   # Vérifie le code
-npm run build  # Construit l’application pour la production
-npm start      # Démarre la version construite
-```
+One branch per feature / major chunk, pushed as soon as it works — so any
+broken change is easy to roll back from. Don't accumulate multiple features
+on one local branch.
 
-## Déploiement du backend
+## Status / what's left
 
-Le fichier [`.github/workflows/deploy.yml`](.github/workflows/deploy.yml) se
-lance automatiquement à chaque push sur la branche `main`.
+Done:
+- Repomix conversion endpoint.
+- Compliance-check endpoint: drives the real checker form end-to-end,
+  verified manually against the live site (branching logic + result
+  scraping both confirmed working).
 
-Le workflow :
-
-1. récupère le code du dépôt ;
-2. configure les identifiants AWS ;
-3. se connecte à Amazon ECR ;
-4. construit l’image Docker située dans `backend/` ;
-5. pousse l’image dans ECR avec le SHA du commit comme tag ;
-6. récupère la définition de tâche ECS existante ;
-7. remplace l’image du conteneur `Main` ;
-8. déploie la nouvelle définition sur le service ECS ;
-9. attend que le service soit stable.
-
-Le workflow utilise actuellement :
-
-- région AWS : `us-east-1` ;
-- cluster ECS : `default` ;
-- service ECS : `cowsay-backend-dcab` ;
-- définition de tâche : `default-cowsay-backend-dcab`.
-
-Les secrets suivants doivent être configurés dans GitHub, dans
-**Settings → Secrets and variables → Actions** :
-
-- `AWS_ACCESS_KEY_ID` ;
-- `AWS_SECRET_ACCESS_KEY`.
-
-## Construire et lancer le backend avec Docker
-
-```bash
-cd backend
-docker build -t cowsay-backend .
-docker run --rm -p 8000:8000 cowsay-backend
-```
-
-Le backend sera accessible sur <http://localhost:8000>.
-
-## Points à connaître
-
-- Le projet n’utilise pas encore de `docker-compose.yml` : le frontend et le
-  backend se lancent séparément.
-- Le frontend attend une réponse JSON et affiche la réponse complète, pas
-  uniquement le champ `message`.
-- `NEXT_PUBLIC_API_URL` est une variable exposée au navigateur : elle ne doit
-  donc pas contenir de secret.
-- Le backend autorise actuellement un nombre limité d’origines CORS. Toute
-  nouvelle URL de frontend doit être ajoutée explicitement.
-- Le message de la route `/` contient encore du texte de test (`v3-debug`) et
-  pourra être remplacé lorsque la logique métier du hackathon sera finalisée.
-
-## Développement recommandé
-
-Pour modifier l’interface, commencer par
-[`frontend/app/page.tsx`](frontend/app/page.tsx). Pour modifier les appels API,
-utiliser [`frontend/app/lib/api.ts`](frontend/app/lib/api.ts). Pour ajouter ou
-modifier une route backend, éditer [`backend/main.py`](backend/main.py), puis
-mettre à jour ce README si le contrat de l’API change.
+Not done yet (from the original brief):
+- Cross-checking the checker's recommendation against the actual AI Act
+  article text (the brief asks the agent to independently verify which
+  article applies, not just trust the checker's own output).
+- A structured "summary of the verification" + explicit missing-info report
+  (`needs_human_input` exists but is raw, not written up).
+- Frontend UI for the compliance-check flow (upload + company info form,
+  results display) — frontend currently only calls `GET /`.
+- No automated tests yet for either backend endpoint.
+- `OPENROUTER_API_KEY` is not wired into the ECS task definition / CI secrets.

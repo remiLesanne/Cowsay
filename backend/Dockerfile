@@ -15,6 +15,10 @@ RUN npm install --omit=dev
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
+# Playwright pilote un vrai navigateur pour remplir le formulaire officiel de
+# l'EU AI Act Compliance Checker (logique de scoring dynamique, non reproduite ici).
+RUN python -m playwright install --with-deps chromium
+
 # Copier tout le code source (dont ton main.py)
 COPY . .
 

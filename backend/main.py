@@ -5,9 +5,11 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import Literal
 
-from fastapi import FastAPI, File, HTTPException, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.responses import Response
+
+from compliance_agent import run_compliance_check
 
 app = FastAPI()
 
@@ -55,8 +57,8 @@ def options_root():
 @app.get("/")
 def read_root():
     return {
-        "message": "🔥 TEST DEPLOYMENT AWS - LE CORS ET LE CODE SONT BIEN A JOUR ! 🔥",
-        "version": "v3-debug"
+        "message": "Cowsay backend API",
+        "version": "1.0"
     }
 
 def _is_ignored_archive_path(path: Path) -> bool:
@@ -153,12 +155,9 @@ def _write_zip_to_project(archive: zipfile.ZipFile, project_dir: Path) -> list[s
     return source_files
 
 
-@app.post("/api/v1/analyses")
-async def create_analysis(
-    file: UploadFile = File(...),
-    output_format: Literal["xml", "markdown"] = "xml",
-):
-    """Convert an uploaded project to an AI-friendly Repomix representation."""
+async def _convert_upload_to_repomix(
+    file: UploadFile, output_format: Literal["xml", "markdown"]
+) -> tuple[str, list[str], str]:
     filename = file.filename or ""
     extension = Path(filename).suffix.lower()
 
@@ -202,9 +201,20 @@ async def create_analysis(
 
         representation = _run_repomix(project_dir, output_format)
 
+    return representation, source_files, extension
+
+
+@app.post("/api/v1/analyses")
+async def create_analysis(
+    file: UploadFile = File(...),
+    output_format: Literal["xml", "markdown"] = "xml",
+):
+    """Convert an uploaded project to an AI-friendly Repomix representation."""
+    representation, source_files, extension = await _convert_upload_to_repomix(file, output_format)
+
     return {
         "analysis_id": "temporary-id",
-        "filename": filename,
+        "filename": file.filename or "",
         "status": "completed",
         "representation": representation,
         "representation_format": output_format,
@@ -219,6 +229,35 @@ async def create_analysis(
             "files": source_files,
             "content_type": file.content_type,
         },
+    }
+
+
+@app.post("/api/v1/compliance-check")
+async def create_compliance_check(
+    file: UploadFile = File(...),
+    company_name: str | None = Form(default=None),
+    company_context: str | None = Form(default=None),
+):
+    """Run the uploaded project through the official EU AI Act Compliance Checker.
+
+    Converts the project to a Repomix representation, then drives the checker
+    at https://artificialintelligenceact.eu/assessment/eu-ai-act-compliance-checker/embedded/
+    with an LLM answering each question from the code (and optional company
+    context), returning the checker's own recommendation.
+    """
+    representation, source_files, _ = await _convert_upload_to_repomix(file, "markdown")
+
+    extra_context = f"Company name: {company_name}\n{company_context or ''}".strip()
+    result = await run_compliance_check(
+        code_context=representation,
+        system_name=company_name,
+        extra_context=extra_context,
+    )
+
+    return {
+        "filename": file.filename or "",
+        "file_count": len(source_files),
+        **result,
     }
 
 @app.get("/health")
