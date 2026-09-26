@@ -1,10 +1,14 @@
 import io
+import logging
 import subprocess
 import sys
+import time
 import zipfile
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import Literal
+
+logger = logging.getLogger(__name__)
 
 from dotenv import load_dotenv
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
@@ -80,6 +84,7 @@ def _is_ignored_archive_path(path: Path) -> bool:
 
 
 def _run_repomix(project_dir: Path, output_format: Literal["xml", "markdown"]):
+    start = time.monotonic()
     try:
         completed_process = subprocess.run(
             [
@@ -116,6 +121,7 @@ def _run_repomix(project_dir: Path, output_format: Literal["xml", "markdown"]):
             detail="Repomix n’a pas réussi à convertir le projet",
         )
 
+    logger.info("Repomix conversion took %.2fs", time.monotonic() - start)
     return completed_process.stdout
 
 

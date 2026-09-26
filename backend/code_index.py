@@ -1,13 +1,10 @@
 import logging
+import os
 import re
 from dataclasses import dataclass
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
-
-from llama_index.core import Document, VectorStoreIndex
-from llama_index.core.retrievers import VectorIndexRetriever
-from llama_index.embeddings.huggingface import HuggingFaceEmbedding
 
 EMBEDDING_MODEL_NAME = "sentence-transformers/all-MiniLM-L6-v2"
 TOP_K_CHUNKS = 5
@@ -18,6 +15,19 @@ MAX_CHUNK_CHARS = 4000
 # Packages\...\LocalCache directory that silently fails to create
 # subdirectories, breaking the model download with a FileNotFoundError.
 EMBEDDING_CACHE_DIR = Path(__file__).parent / ".embeddings_cache"
+
+# Once the model is cached, skip HuggingFace Hub's online ETag/redirect checks
+# entirely (~15 network round-trips observed, several seconds) on every single
+# request — they only matter for picking up a model update, which never
+# happens for a pinned model name like this one. Must be set before importing
+# huggingface_hub (transitively, via llama_index/sentence_transformers) so it
+# reads the env var at import time.
+if any(EMBEDDING_CACHE_DIR.glob("models--*/snapshots/*/*")):
+    os.environ.setdefault("HF_HUB_OFFLINE", "1")
+
+from llama_index.core import Document, VectorStoreIndex
+from llama_index.core.retrievers import VectorIndexRetriever
+from llama_index.embeddings.huggingface import HuggingFaceEmbedding
 
 # Repomix's markdown output delimits each source file with "## File: <path>"
 # followed by a fenced code block (see backend/main.py, output_format="markdown").

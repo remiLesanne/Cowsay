@@ -1,13 +1,18 @@
 import asyncio
 import json
+import logging
 import os
 import re
+import time
 
 import httpx
 from fastapi import HTTPException
 from playwright.async_api import async_playwright
 
 from code_index import ProjectIndex, build_project_index
+
+logger = logging.getLogger(__name__)
+logging.basicConfig(level=logging.INFO)
 
 COMPLIANCE_CHECKER_URL = (
     "https://artificialintelligenceact.eu/assessment/eu-ai-act-compliance-checker/embedded/"
@@ -17,6 +22,18 @@ LLM_MODEL = os.environ.get("ZAI_MODEL", "glm-4.5-flash")
 MAX_ITERATIONS = 30
 NAVIGATION_TIMEOUT_MS = 60000
 DOM_SETTLE_TIMEOUT_MS = 500
+
+_http_client: httpx.AsyncClient | None = None
+
+
+def _get_http_client() -> httpx.AsyncClient:
+    # Reused across every LLM call in the process instead of one AsyncClient
+    # per call, so httpx's connection pool can keep the TLS/TCP connection to
+    # Z.AI alive between questions instead of renegotiating it every time.
+    global _http_client
+    if _http_client is None:
+        _http_client = httpx.AsyncClient(timeout=120)
+    return _http_client
 
 # Returns every currently visible question on the page (radio/checkbox groups and
 # text/email/textarea inputs), together with the question text scraped from the
@@ -139,15 +156,15 @@ async def _ask_llm_for_answer(field: dict, retrieved_code_text: str, extra_conte
     )
 
     try:
-        async with httpx.AsyncClient(timeout=120) as client:
-            response = await client.post(
-                LLM_API_URL,
-                headers={"Authorization": f"Bearer {api_key}"},
-                json={
-                    "model": LLM_MODEL,
-                    "messages": [{"role": "user", "content": prompt}],
-                },
-            )
+        client = _get_http_client()
+        response = await client.post(
+            LLM_API_URL,
+            headers={"Authorization": f"Bearer {api_key}"},
+            json={
+                "model": LLM_MODEL,
+                "messages": [{"role": "user", "content": prompt}],
+            },
+        )
     except httpx.TimeoutException as error:
         raise HTTPException(
             status_code=504,
@@ -219,7 +236,9 @@ async def run_compliance_check(
     from scratch on every human-answer round would re-pay the indexing cost
     spec 002's research.md already measured as significant for large projects.
     """
+    index_start = time.monotonic()
     project_index = await asyncio.to_thread(build_project_index, code_context)
+    logger.info("Building the code index took %.2fs", time.monotonic() - index_start)
     result = await run_compliance_check_with_index(project_index, system_name, extra_context)
     return result, project_index
 
@@ -239,36 +258,46 @@ async def run_compliance_check_with_index(
 
     processed: dict[str, dict] = {}
     unresolved: list[dict] = []
+    run_start = time.monotonic()
 
     async with async_playwright() as playwright:
         browser = await playwright.chromium.launch(headless=True)
         try:
             page = await browser.new_page()
+            nav_start = time.monotonic()
             await page.goto(
-                COMPLIANCE_CHECKER_URL, wait_until="networkidle", timeout=NAVIGATION_TIMEOUT_MS
+                COMPLIANCE_CHECKER_URL, wait_until="domcontentloaded", timeout=NAVIGATION_TIMEOUT_MS
             )
+            logger.info("Navigation to checker page took %.2fs", time.monotonic() - nav_start)
 
             try:
                 await page.get_by_text("Accept", exact=False).first.click(timeout=3000)
             except Exception:
                 pass
 
-            for _ in range(MAX_ITERATIONS):
+            for iteration in range(MAX_ITERATIONS):
                 fields = await page.evaluate(GET_VISIBLE_FIELDS_JS)
                 new_fields = [field for field in fields if field["id"] not in processed]
                 if not new_fields:
                     break
 
                 for field in new_fields:
+                    field_start = time.monotonic()
                     human_value = human_answers.get(field["id"]) if human_answers else None
                     if human_value is not None:
                         answer = _human_answer_to_field_answer(field, human_value)
+                        source = "human"
                     else:
                         question_text = _strip_html(field["question"])
                         retrieved = await asyncio.to_thread(project_index.query, question_text)
                         answer = await _ask_llm_for_answer(
                             field, retrieved.as_prompt_text(), combined_extra_context
                         )
+                        source = "llm"
+                    logger.info(
+                        "[iter %d] field %s (%s, %s) took %.2fs",
+                        iteration, field["id"], field["type"], source, time.monotonic() - field_start,
+                    )
                     processed[field["id"]] = answer
                     if answer.get("confidence") == "low" or (
                         field["type"] in ("radio", "checkbox") and not answer.get("selected")
@@ -284,6 +313,11 @@ async def run_compliance_check_with_index(
                 "incomplete" not in results_text.lower()
         finally:
             await browser.close()
+
+    logger.info(
+        "run_compliance_check_with_index total: %.2fs (%d fields processed)",
+        time.monotonic() - run_start, len(processed),
+    )
 
     return {
         "is_complete": is_complete,
