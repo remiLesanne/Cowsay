@@ -120,6 +120,16 @@ One branch per feature / major chunk, pushed as soon as it works — so any
 broken change is easy to roll back from. Don't accumulate multiple features
 on one local branch.
 
+## Development process (Spec Kit)
+
+Rubric requires a spec-driven workflow when using an AI coding harness. Rules
+live in [`.specify/memory/constitution.md`](.specify/memory/constitution.md).
+Non-trivial features go through: `/speckit-specify` → `/speckit-plan` →
+`/speckit-tasks` → `/speckit-implement`, with artifacts under `specs/`.
+`specs/001-compliance-check-agent/spec.md` documents the compliance-check
+feature retroactively (built before Spec Kit was adopted); everything after
+that should have specs written before implementation.
+
 ## Status / what's left
 
 Done:
