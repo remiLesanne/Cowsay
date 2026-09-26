@@ -163,6 +163,20 @@ swap in the new image, deploy to Fargate. Needs `AWS_ACCESS_KEY_ID` /
 `AWS_SECRET_ACCESS_KEY` GitHub secrets, and `MISTRAL_API_KEY` set on the
 ECS task definition for compliance-check to work in production.
 
+Production sizing (live-verified): the service runs in ECS Express mode, so the
+ALB is `ecs-express-gateway-alb-*`. `/compliance-check` is one synchronous
+request and building the embedding index is CPU-bound (~108s for a 1 MB upload
+on a small task), so:
+
+- Task size: **2 vCPU / 8 GB** (the default wizard size caused 504s).
+- ALB `idle_timeout.timeout_seconds` = **300** (default 60 → 504 with no CORS
+  headers). Set via `aws elbv2 modify-load-balancer-attributes`; Express mode
+  may reset it on redeploy — re-check if 504s reappear.
+- Change CPU/memory/env vars via a new revision of `default-cowsay-backend-dcab`;
+  `deploy.yml` reuses the latest revision and only swaps the image.
+- Durable fix if this bites again: make the endpoint an async job (job id +
+  polling) so no request depends on the ALB timeout.
+
 ## Git workflow for this repo
 
 One branch per feature / major chunk, pushed as soon as it works — so any
@@ -209,7 +223,8 @@ Not done yet (from the original brief):
 - No automated tests yet for any backend endpoint — every verification in
   this project so far has been live manual/scripted testing against the real
   API, not a committed test suite.
-- `MISTRAL_API_KEY` is not wired into the ECS task definition / CI secrets.
+- `MISTRAL_API_KEY` is set directly on the ECS task definition (not in CI
+  secrets); the task definition is edited by hand, not managed as code.
 - Session cache (`session_store.py`) is in-memory/single-process — lost on
   restart, doesn't scale beyond one instance (documented trade-off, not an
   oversight).
