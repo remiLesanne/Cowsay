@@ -72,12 +72,7 @@ export default function Home() {
     setMessage('');
     try {
       const result = await runComplianceCheck(file);
-      sessionStorage.setItem('ai-risk-check-result', JSON.stringify({
-        name: file.name,
-        size: file.size,
-        result,
-      }));
-      router.push('/analyse');
+      router.push(`/analyse?id=${encodeURIComponent(result.analysis_id)}`);
     } catch (error) {
       setMessage(error instanceof Error ? error.message : 'Impossible d’analyser ce fichier.');
       setIsAnalysing(false);

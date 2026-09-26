@@ -51,15 +51,15 @@
 **Goal**: authenticated check + resume, persisted as one analysis row, per-question detail returned, text-answer bug fixed.
 **Independent test**: quickstart scenarios 4-5 and the curl `401` check.
 
-- [ ] T011 [P] [US2] In `backend/compliance_agent.py`, build `question_details` in `run_compliance_check_with_index` for every processed field (`field_id`, `type`, `question` stripped of HTML, `answer` = selected list for radio/checkbox or text, `reasoning`, `confidence`, `source` `"ai"`/`"human"`) and add it to the returned dict
-- [ ] T012 [P] [US2] In `backend/session_store.py`, add `user_id` and `analysis_id` to `ComplianceSession` and `create_session`, plus `find_session_id_by_analysis(analysis_id)` (skips expired sessions)
-- [ ] T013 [US2] In `backend/main.py`, compute the content fingerprint in `_convert_upload_to_repomix` (SHA-256 over sorted relative path + bytes of the extracted, non-ignored files; single file: name + bytes) and return it
-- [ ] T014 [US2] In `backend/main.py`, require `get_current_user` on `POST /api/v1/compliance-check`; after a successful run insert an `Analysis` row (fields per data-model.md), create the session with `user_id`/`analysis_id`, and return `analysis_id` + `question_details` (contracts/api.md)
-- [ ] T015 [US2] In `backend/main.py` `answer_compliance_check`: require `get_current_user`; treat a session owned by another user as `404`; **fix the bug** — validate options only for radio/checkbox but store every answer for a known pending field (text included) in `session.human_answers`; after a successful run update the same `Analysis` row (`results_text`, `is_complete`, `question_details`, `needs_human_input`, `updated_at`)
-- [ ] T016 [US2] In `frontend/app/lib/api.ts`, make `runComplianceCheck` and `resumeComplianceCheck` use `authFetch`; add `getAnalysis(id)` for `GET /api/v1/history/{id}` (implemented in US3, used here to load the result page)
-- [ ] T017 [US2] In `frontend/app/page.tsx`, after a successful check navigate to `/analyse?id=<analysis_id>` instead of the `sessionStorage` hand-off
-- [ ] T018 [US2] Rework `frontend/app/analyse/page.tsx`: guarded + `AppHeader`; read `id` from the URL (`useSearchParams`, wrapped in `Suspense` per Next 16 docs) and load via `getAnalysis`; add a per-question table (question, answer, reasoning, source badge IA/humain); pending-question form only when `session_id` is present, otherwise a message "session expirée — relancez une analyse en renvoyant le fichier"; after a resume, refresh from the response
-- [ ] T019 [P] [US2] Make `frontend/app/compliance/page.tsx` use the authenticated `runComplianceCheck` (401 → login) — no other change
+- [X] T011 [P] [US2] In `backend/compliance_agent.py`, build `question_details` in `run_compliance_check_with_index` for every processed field (`field_id`, `type`, `question` stripped of HTML, `answer` = selected list for radio/checkbox or text, `reasoning`, `confidence`, `source` `"ai"`/`"human"`) and add it to the returned dict
+- [X] T012 [P] [US2] In `backend/session_store.py`, add `user_id` and `analysis_id` to `ComplianceSession` and `create_session`, plus `find_session_id_by_analysis(analysis_id)` (skips expired sessions)
+- [X] T013 [US2] In `backend/main.py`, compute the content fingerprint in `_convert_upload_to_repomix` (SHA-256 over sorted relative path + bytes of the extracted, non-ignored files; single file: name + bytes) and return it
+- [X] T014 [US2] In `backend/main.py`, require `get_current_user` on `POST /api/v1/compliance-check`; after a successful run insert an `Analysis` row (fields per data-model.md), create the session with `user_id`/`analysis_id`, and return `analysis_id` + `question_details` (contracts/api.md)
+- [X] T015 [US2] In `backend/main.py` `answer_compliance_check`: require `get_current_user`; treat a session owned by another user as `404`; **fix the bug** — validate options only for radio/checkbox but store every answer for a known pending field (text included) in `session.human_answers`; after a successful run update the same `Analysis` row (`results_text`, `is_complete`, `question_details`, `needs_human_input`, `updated_at`)
+- [X] T016 [US2] In `frontend/app/lib/api.ts`, make `runComplianceCheck` and `resumeComplianceCheck` use `authFetch`; add `getAnalysis(id)` for `GET /api/v1/history/{id}` (implemented in US3, used here to load the result page)
+- [X] T017 [US2] In `frontend/app/page.tsx`, after a successful check navigate to `/analyse?id=<analysis_id>` instead of the `sessionStorage` hand-off
+- [X] T018 [US2] Rework `frontend/app/analyse/page.tsx`: guarded + `AppHeader`; read `id` from the URL (`useSearchParams`, wrapped in `Suspense` per Next 16 docs) and load via `getAnalysis`; add a per-question table (question, answer, reasoning, source badge IA/humain); pending-question form only when `session_id` is present, otherwise a message "session expirée — relancez une analyse en renvoyant le fichier"; after a resume, refresh from the response
+- [X] T019 [P] [US2] Make `frontend/app/compliance/page.tsx` use the authenticated `runComplianceCheck` (401 → login) — no other change
 
 **Checkpoint**: quickstart 4-5 pass; `SELECT filename, is_complete FROM analyses;` shows one row per check, updated on resume.
 
@@ -70,8 +70,8 @@
 **Goal**: list and reopen own analyses from the database.
 **Independent test**: quickstart scenarios 6-7.
 
-- [ ] T020 [US3] Create `backend/history.py` router: `GET /api/v1/history` (current user's analyses, `created_at` desc, summary fields) and `GET /api/v1/history/{analysis_id}` (full record filtered on `user_id` → `404` otherwise; includes `session_id` only if `find_session_id_by_analysis` finds a live session); include it in `backend/main.py`
-- [ ] T021 [US3] Create `frontend/app/historique/page.tsx`: guarded + `AppHeader`, list newest first (file name, date, company, complete/incomplete badge) linking to `/analyse?id=`, empty state with a link to start an analysis
+- [X] T020 [US3] Create `backend/history.py` router: `GET /api/v1/history` (current user's analyses, `created_at` desc, summary fields) and `GET /api/v1/history/{analysis_id}` (full record filtered on `user_id` → `404` otherwise; includes `session_id` only if `find_session_id_by_analysis` finds a live session); include it in `backend/main.py`
+- [X] T021 [US3] Create `frontend/app/historique/page.tsx`: guarded + `AppHeader`, list newest first (file name, date, company, complete/incomplete badge) linking to `/analyse?id=`, empty state with a link to start an analysis
 
 **Checkpoint**: quickstart 6-7 pass (two accounts, no cross visibility).
 

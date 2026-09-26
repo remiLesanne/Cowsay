@@ -138,7 +138,7 @@ export async function getMe(): Promise<User> {
   return response.json();
 }
 
-export async function runComplianceCheck(file: File, companyName?: string, companyContext?: string) {
+export async function runComplianceCheck(file: File, companyName?: string, companyContext?: string): Promise<AnalysisResult> {
   const formData = new FormData();
   formData.append('file', file);
   if (companyName) formData.append('company_name', companyName);
@@ -159,7 +159,7 @@ export async function runComplianceCheck(file: File, companyName?: string, compa
 
 export type HumanAnswer = { field_id: string; value: string | string[] };
 
-export async function resumeComplianceCheck(sessionId: string, answers: HumanAnswer[]) {
+export async function resumeComplianceCheck(sessionId: string, answers: HumanAnswer[]): Promise<AnalysisResult> {
   const response = await authFetch(`/api/v1/compliance-check/${sessionId}/answer`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -171,5 +171,66 @@ export async function resumeComplianceCheck(sessionId: string, answers: HumanAns
     throw new Error(detailToMessage(error?.detail, 'Impossible d’envoyer la réponse.'));
   }
 
+  return response.json();
+}
+
+export type UnresolvedQuestion = {
+  field_id: string;
+  // The checker has other free-text-like kinds too; anything without `options`
+  // is rendered as a text input, so this is intentionally not a closed union.
+  type: 'radio' | 'checkbox' | string;
+  question: string;
+  reasoning: string;
+  options?: string[];
+};
+
+export type QuestionDetail = {
+  field_id: string;
+  type: string;
+  question: string;
+  answer: string | string[];
+  reasoning: string;
+  confidence: string;
+  source: 'ai' | 'human';
+};
+
+export type AnalysisResult = {
+  analysis_id: string;
+  // Only present while the server-side session can still be resumed (30 min).
+  session_id: string | null;
+  filename: string;
+  // Returned by a fresh check only (not stored).
+  file_count?: number;
+  company_name?: string | null;
+  is_complete: boolean;
+  results_text: string;
+  questions_answered: number;
+  question_details: QuestionDetail[];
+  needs_human_input: UnresolvedQuestion[];
+  created_at?: string;
+  updated_at?: string;
+};
+
+export type AnalysisSummary = {
+  id: string;
+  filename: string;
+  company_name: string | null;
+  is_complete: boolean;
+  created_at: string;
+  updated_at: string;
+};
+
+export async function getAnalysis(analysisId: string): Promise<AnalysisResult> {
+  const response = await authFetch(`/api/v1/history/${encodeURIComponent(analysisId)}`);
+  if (!response.ok) {
+    const error = await response.json().catch(() => null);
+    throw new Error(detailToMessage(error?.detail, 'Impossible de charger cette analyse.'));
+  }
+  return response.json();
+}
+
+export async function listAnalyses(): Promise<AnalysisSummary[]> {
+  const response = await authFetch('/api/v1/history');
+  if (!response.ok) throw new Error('Impossible de charger vos analyses.');
   return response.json();
 }

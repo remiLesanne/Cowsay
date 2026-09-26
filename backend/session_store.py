@@ -17,6 +17,10 @@ _sessions: dict[str, "ComplianceSession"] = {}
 @dataclass
 class ComplianceSession:
     project_index: ProjectIndex
+    # Owner and saved analysis (specs/005): a resume is refused for anyone else,
+    # and updates this analysis row rather than creating a new one.
+    user_id: uuid.UUID
+    analysis_id: uuid.UUID
     system_name: str | None = None
     extra_context: str | None = None
     unresolved_by_field_id: dict[str, dict] = field(default_factory=dict)
@@ -25,11 +29,17 @@ class ComplianceSession:
 
 
 def create_session(
-    project_index: ProjectIndex, system_name: str | None, extra_context: str | None
+    project_index: ProjectIndex,
+    user_id: uuid.UUID,
+    analysis_id: uuid.UUID,
+    system_name: str | None,
+    extra_context: str | None,
 ) -> str:
     session_id = uuid.uuid4().hex
     _sessions[session_id] = ComplianceSession(
         project_index=project_index,
+        user_id=user_id,
+        analysis_id=analysis_id,
         system_name=system_name,
         extra_context=extra_context,
         expires_at=time.time() + SESSION_TTL_SECONDS,
@@ -46,3 +56,13 @@ def get_session(session_id: str) -> ComplianceSession | None:
         return None
     session.expires_at = time.time() + SESSION_TTL_SECONDS
     return session
+
+
+def find_session_id_by_analysis(analysis_id: uuid.UUID) -> str | None:
+    """The live session for a saved analysis, if it hasn't expired — lets a
+    reopened analysis still offer its pending questions (specs/005)."""
+    now = time.time()
+    for session_id, session in _sessions.items():
+        if session.analysis_id == analysis_id and session.expires_at >= now:
+            return session_id
+    return None
