@@ -33,14 +33,6 @@ type AnalysisResult = {
   };
 };
 
-function formatArchiveTree(files: string[]) {
-  if (files.length === 0) {
-    return '.\n└── Aucun fichier de code détecté';
-  }
-
-  return ['.', ...files.sort().map((filePath) => `├── ${filePath}`)].join('\n');
-}
-
 function FileCodeIcon() {
   return <svg aria-hidden="true" className="h-6 w-6" fill="none" viewBox="0 0 24 24"><path d="m8.5 8-4 4 4 4M15.5 8l4 4-4 4M13.5 5l-3 14" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.7" /></svg>;
 }
@@ -123,14 +115,6 @@ export default function AnalysePage() {
           {isAnalysing && <span className="rounded-full bg-amber-50 px-3 py-1.5 text-xs font-medium text-amber-700">Analyse en cours…</span>}
           {result && <span className="rounded-full bg-emerald-50 px-3 py-1.5 text-xs font-medium text-emerald-700">Analyse terminée</span>}
           {error && <span className="rounded-full bg-rose-50 px-3 py-1.5 text-xs font-medium text-rose-700">Échec de l’analyse</span>}
-        </div>
-
-        <div className="mt-8 overflow-hidden rounded-xl border border-slate-200 bg-[#111827] shadow-[0_12px_40px_rgba(15,23,42,0.08)]">
-          <div className="flex h-12 items-center justify-between border-b border-slate-700 bg-[#1f2937] px-5">
-            <div className="flex items-center gap-2"><span className="h-2.5 w-2.5 rounded-full bg-rose-400" /><span className="h-2.5 w-2.5 rounded-full bg-amber-300" /><span className="h-2.5 w-2.5 rounded-full bg-emerald-400" /></div>
-            {file && <span className="text-xs text-slate-400">{file.size < 1024 * 1024 ? `${Math.max(1, Math.round(file.size / 1024))} Ko` : `${(file.size / (1024 * 1024)).toFixed(1)} Mo`}</span>}
-          </div>
-          <pre className="min-h-[460px] overflow-x-auto p-6 text-left font-mono text-[13px] leading-6 text-slate-200 sm:p-8">{file ? result?.metadata.archive ? formatArchiveTree(result.metadata.files ?? []) : file.content : <span className="text-slate-400">Aucun fichier n’a été trouvé. Retournez au dépôt pour sélectionner un fichier.</span>}</pre>
         </div>
 
         <div className="mt-6 flex flex-col items-start justify-between gap-4 rounded-xl border border-slate-200 bg-white px-5 py-4 text-sm text-slate-500 sm:flex-row sm:items-center">
