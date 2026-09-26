@@ -17,19 +17,30 @@ _sessions: dict[str, "ComplianceSession"] = {}
 @dataclass
 class ComplianceSession:
     project_index: ProjectIndex
+    code_context: str = ""
     system_name: str | None = None
     extra_context: str | None = None
+    # specs/004-two-stage-analysis: accumulated extra material supplied while
+    # resolving gaps (typed answers or uploaded document text), folded back
+    # into the summarization prompt on every resolve-gaps call so the summary
+    # stays one coherent document instead of a patchwork (research.md).
+    extra_documents: list[str] = field(default_factory=list)
+    summary: dict = field(default_factory=lambda: {"summary": "", "gaps": []})
     unresolved_by_field_id: dict[str, dict] = field(default_factory=dict)
     human_answers: dict[str, str | list[str]] = field(default_factory=dict)
     expires_at: float = 0.0
 
 
 def create_session(
-    project_index: ProjectIndex, system_name: str | None, extra_context: str | None
+    project_index: ProjectIndex,
+    system_name: str | None,
+    extra_context: str | None,
+    code_context: str = "",
 ) -> str:
     session_id = uuid.uuid4().hex
     _sessions[session_id] = ComplianceSession(
         project_index=project_index,
+        code_context=code_context,
         system_name=system_name,
         extra_context=extra_context,
         expires_at=time.time() + SESSION_TTL_SECONDS,
