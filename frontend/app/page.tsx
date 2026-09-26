@@ -73,25 +73,12 @@ export default function Home() {
     try {
       if (file.name.toLowerCase().endsWith('.zip')) {
         const analysisResult = await analyzeFile(file, 'markdown');
-        sessionStorage.setItem('ai-risk-check-file', JSON.stringify({
-          name: file.name,
-          size: file.size,
-          type: file.type,
-          content: '',
-          analysisResult,
-        }));
-        router.push('/analyse');
+        router.push(`/analyse?id=${encodeURIComponent(analysisResult.analysis_id)}`);
         return;
       }
 
-      const content = await file.text();
-      sessionStorage.setItem('ai-risk-check-file', JSON.stringify({
-        name: file.name,
-        size: file.size,
-        type: file.type,
-        content,
-      }));
-      router.push('/analyse');
+      const analysisResult = await analyzeFile(file, 'markdown');
+      router.push(`/analyse?id=${encodeURIComponent(analysisResult.analysis_id)}`);
     } catch {
       setMessage('Impossible de lire ce fichier.');
       setIsAnalysing(false);

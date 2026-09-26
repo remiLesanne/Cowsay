@@ -1,35 +1,27 @@
 'use client';
 
 import Link from 'next/link';
+import { useSearchParams } from 'next/navigation';
 import { useEffect, useState } from 'react';
-import { analyzeFile } from '../lib/api';
-
-type StoredFile = {
-  name: string;
-  size: number;
-  type?: string;
-  content: string;
-  analysisResult?: AnalysisResult;
-};
+import { getAnalysis } from '../lib/api';
 
 type AnalysisResult = {
   analysis_id: string;
   filename: string;
   status: string;
+  representation?: string;
+  representation_format?: 'xml' | 'markdown';
   summary: {
     risk_level: string;
     score: number;
   };
   findings: Array<unknown>;
-  representation?: string;
-  representation_format?: 'xml' | 'markdown';
   metadata: {
-    content_length?: number;
-    content_type?: string;
     archive?: boolean;
     file_count?: number;
+    file_size?: number;
     files?: string[];
-    uncompressed_size?: number;
+    content_type?: string;
   };
 };
 
@@ -42,56 +34,38 @@ function ArrowLeftIcon() {
 }
 
 export default function AnalysePage() {
-  const [file, setFile] = useState<StoredFile | null>(null);
+  const searchParams = useSearchParams();
+  const analysisId = searchParams.get('id');
   const [result, setResult] = useState<AnalysisResult | null>(null);
-  const [isAnalysing, setIsAnalysing] = useState(false);
+  const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState('');
 
   useEffect(() => {
-    const storedFile = sessionStorage.getItem('ai-risk-check-file');
-    if (storedFile) {
-      let cancelled = false;
-      try {
-        const parsedFile = JSON.parse(storedFile) as StoredFile;
-        const timer = window.setTimeout(() => {
-          if (cancelled) return;
-
-          setFile(parsedFile);
-
-          if (parsedFile.analysisResult) {
-            setResult(parsedFile.analysisResult);
-            return;
-          }
-
-          const reconstructedFile = new File(
-            [parsedFile.content],
-            parsedFile.name,
-            { type: parsedFile.type || 'text/plain' },
-          );
-
-          setIsAnalysing(true);
-          analyzeFile(reconstructedFile, 'markdown')
-            .then((analysisResult: AnalysisResult) => {
-              if (!cancelled) setResult(analysisResult);
-            })
-            .catch((analysisError: Error) => {
-              if (!cancelled) setError(analysisError.message);
-            })
-            .finally(() => {
-              if (!cancelled) setIsAnalysing(false);
-            });
-        }, 0);
-
-        return () => {
-          cancelled = true;
-          window.clearTimeout(timer);
-        };
-      } catch {
-        sessionStorage.removeItem('ai-risk-check-file');
-        window.setTimeout(() => setError('Impossible de préparer le fichier.'), 0);
+    let cancelled = false;
+    const timer = window.setTimeout(() => {
+      if (!analysisId) {
+        setError('Identifiant d’analyse manquant.');
+        setIsLoading(false);
+        return;
       }
-    }
-  }, []);
+
+      getAnalysis(analysisId)
+        .then((analysisResult: AnalysisResult) => {
+          if (!cancelled) setResult(analysisResult);
+        })
+        .catch((analysisError: Error) => {
+          if (!cancelled) setError(analysisError.message);
+        })
+        .finally(() => {
+          if (!cancelled) setIsLoading(false);
+        });
+    }, 0);
+
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [analysisId]);
 
   return (
     <main className="min-h-screen bg-[#f8fafc] text-slate-900">
@@ -110,13 +84,17 @@ export default function AnalysePage() {
         <div className="mt-9 flex flex-col justify-between gap-5 border-b border-slate-200 pb-7 sm:flex-row sm:items-end">
           <div>
             <p className="mb-3 text-xs font-semibold uppercase tracking-[0.2em] text-[#277da1]">Fichier soumis</p>
-            <h1 className="text-3xl font-semibold tracking-[-0.03em] text-slate-900">{file?.name ?? 'Contenu du fichier'}</h1>
+            <h1 className="text-3xl font-semibold tracking-[-0.03em] text-slate-900">{result?.filename ?? 'Analyse du projet'}</h1>
           </div>
-          {isAnalysing && <span className="rounded-full bg-amber-50 px-3 py-1.5 text-xs font-medium text-amber-700">Analyse en cours…</span>}
+          {isLoading && <span className="rounded-full bg-amber-50 px-3 py-1.5 text-xs font-medium text-amber-700">Récupération de l’analyse…</span>}
           {result && <span className="rounded-full bg-emerald-50 px-3 py-1.5 text-xs font-medium text-emerald-700">Analyse terminée</span>}
           {error && <span className="rounded-full bg-rose-50 px-3 py-1.5 text-xs font-medium text-rose-700">Échec de l’analyse</span>}
         </div>
 
+        <div className="mt-6 flex flex-col items-start justify-between gap-4 rounded-xl border border-slate-200 bg-white px-5 py-4 text-sm text-slate-500 sm:flex-row sm:items-center">
+          <span>{error || (isLoading ? 'Récupération de la représentation Repomix.' : result ? 'La représentation Markdown est prête.' : 'Aucune analyse trouvée.')}</span>
+          {!result && !isLoading && <Link className="font-medium text-[#277da1] hover:underline" href="/">Sélectionner un fichier</Link>}
+        </div>
 
         {result?.representation && (
           <section className="mt-6 overflow-hidden rounded-xl border border-slate-200 bg-white">

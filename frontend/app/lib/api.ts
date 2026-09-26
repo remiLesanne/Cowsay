@@ -32,3 +32,14 @@ export async function analyzeFile(file: File, outputFormat: 'xml' | 'markdown' =
 
   return response.json();
 }
+
+export async function getAnalysis(analysisId: string) {
+  const response = await fetch(`${API_URL}/api/v1/analyses/${encodeURIComponent(analysisId)}`);
+
+  if (!response.ok) {
+    const error = await response.json().catch(() => null);
+    throw new Error(error?.detail || 'Impossible de récupérer l’analyse.');
+  }
+
+  return response.json();
+}

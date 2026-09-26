@@ -4,6 +4,7 @@ import zipfile
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import Literal
+from uuid import uuid4
 
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
@@ -34,6 +35,7 @@ IGNORED_ARCHIVE_DIRECTORIES = {
 REPOMIX_IGNORES = ",".join(
     f"{directory}/**" for directory in sorted(IGNORED_ARCHIVE_DIRECTORIES)
 )
+ANALYSES: dict[str, dict] = {}
 
 # 1. Le middleware CORS DOIT être ajouté en premier
 app.add_middleware(
@@ -202,8 +204,9 @@ async def create_analysis(
 
         representation = _run_repomix(project_dir, output_format)
 
-    return {
-        "analysis_id": "temporary-id",
+    analysis_id = str(uuid4())
+    result = {
+        "analysis_id": analysis_id,
         "filename": filename,
         "status": "completed",
         "representation": representation,
@@ -217,9 +220,21 @@ async def create_analysis(
             "archive": extension == ".zip",
             "file_count": len(source_files),
             "files": source_files,
+            "file_size": len(content),
             "content_type": file.content_type,
         },
     }
+
+    ANALYSES[analysis_id] = result
+    return result
+
+
+@app.get("/api/v1/analyses/{analysis_id}")
+def get_analysis(analysis_id: str):
+    result = ANALYSES.get(analysis_id)
+    if result is None:
+        raise HTTPException(status_code=404, detail="Analyse introuvable")
+    return result
 
 @app.get("/health")
 def health_check():
