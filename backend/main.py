@@ -4,6 +4,7 @@ import subprocess
 import sys
 import time
 import zipfile
+from contextlib import asynccontextmanager
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import Literal
@@ -18,10 +19,19 @@ from starlette.responses import Response
 
 load_dotenv()  # must run before compliance_agent reads MISTRAL_* at import time
 
+import auth
 import session_store
 from compliance_agent import run_compliance_check, run_compliance_check_with_index
+from db import init_db
 
-app = FastAPI()
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    init_db()  # creates users/analyses tables on first run (specs/005)
+    yield
+
+
+app = FastAPI(lifespan=lifespan)
 
 ALLOWED_EXTENSIONS = {
     ".py", ".js", ".ts", ".tsx", ".jsx", ".java", ".go", ".rs",
@@ -65,6 +75,8 @@ app.add_middleware(
 )
 
 # 2. Ensuite seulement, les routes
+app.include_router(auth.router)
+
 @app.options("/")
 def options_root():
     return Response(status_code=200)

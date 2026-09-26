@@ -16,16 +16,16 @@
 
 ## Phase 1: Setup
 
-- [ ] T001 Add `sqlalchemy>=2`, `psycopg[binary]>=3`, `pwdlib[argon2]`, `pyjwt`, `email-validator` to `backend/requirements.txt` and install them in `backend/.venv`
-- [ ] T002 [P] In `backend/.env.example`, replace the locally-edited `DATABASE_URL` line with the placeholder `DATABASE_URL=postgresql+psycopg://cowsay:CHANGE_ME@localhost:5432/cowsay` and add `JWT_SECRET=CHANGE_ME` (never a real secret in this tracked file); remind the user to add a real `JWT_SECRET` to `backend/.env`
+- [X] T001 Add `sqlalchemy>=2`, `psycopg[binary]>=3`, `pwdlib[argon2]`, `pyjwt`, `email-validator` to `backend/requirements.txt` and install them in `backend/.venv`
+- [X] T002 [P] In `backend/.env.example`, replace the locally-edited `DATABASE_URL` line with the placeholder `DATABASE_URL=postgresql+psycopg://cowsay:CHANGE_ME@localhost:5432/cowsay` and add `JWT_SECRET=CHANGE_ME` (never a real secret in this tracked file); remind the user to add a real `JWT_SECRET` to `backend/.env`
 
 ---
 
 ## Phase 2: Foundational (blocks all stories)
 
-- [ ] T003 Create `backend/db.py`: engine + `SessionLocal` from `DATABASE_URL` (clear error if missing), declarative `Base`, `get_db` FastAPI dependency, `init_db()` calling `Base.metadata.create_all`; models per data-model.md — `User` (`id` UUID PK, `email` unique "stored lower-cased and trimmed", `password_hash`, `created_at`) and `Analysis` (`id` UUID PK, `user_id` FK→users indexed, `filename`, `content_fingerprint` char(64) indexed, `company_name` nullable, `results_text`, `is_complete`, `question_details` JSONB, `needs_human_input` JSONB, `created_at`, `updated_at`)
-- [ ] T004 Call `init_db()` at startup in `backend/main.py` (FastAPI lifespan) so tables exist on first run
-- [ ] T005 Create `backend/auth.py`: argon2 hashing via `pwdlib`, `create_access_token(user_id)` (HS256, 24h, `JWT_SECRET` from env), `get_current_user` dependency reading `Authorization: Bearer` → `401` on missing/invalid/expired token or unknown user
+- [X] T003 Create `backend/db.py`: engine + `SessionLocal` from `DATABASE_URL` (clear error if missing), declarative `Base`, `get_db` FastAPI dependency, `init_db()` calling `Base.metadata.create_all`; models per data-model.md — `User` (`id` UUID PK, `email` unique "stored lower-cased and trimmed", `password_hash`, `created_at`) and `Analysis` (`id` UUID PK, `user_id` FK→users indexed, `filename`, `content_fingerprint` char(64) indexed, `company_name` nullable, `results_text`, `is_complete`, `question_details` JSONB, `needs_human_input` JSONB, `created_at`, `updated_at`)
+- [X] T004 Call `init_db()` at startup in `backend/main.py` (FastAPI lifespan) so tables exist on first run
+- [X] T005 Create `backend/auth.py`: argon2 hashing via `pwdlib`, `create_access_token(user_id)` (HS256, 24h, `JWT_SECRET` from env), `get_current_user` dependency reading `Authorization: Bearer` → `401` on missing/invalid/expired token or unknown user
 
 **Checkpoint**: backend starts, `\dt` in psql shows `users` and `analyses`.
 
@@ -36,11 +36,11 @@
 **Goal**: register / login / logout / current user, and a logged-out visitor is sent to `/login`.
 **Independent test**: quickstart scenarios 1-3 and 8.
 
-- [ ] T006 [US1] Add an `APIRouter` in `backend/auth.py` per contracts/api.md: `POST /api/v1/auth/register` (`EmailStr`, password "at least 8 characters", `409` if email exists case-insensitively, returns token + user, status 201), `POST /api/v1/auth/login` (one generic `401` message for unknown email or wrong password), `GET /api/v1/auth/me`; include it in `backend/main.py`
-- [ ] T007 [P] [US1] In `frontend/app/lib/api.ts`: token get/set/clear in `localStorage` (guarded for SSR), an `authFetch` helper adding the bearer header and, on `401`, clearing the token and redirecting to `/login`; `register`, `login`, `logout`, `getMe` functions
-- [ ] T008 [P] [US1] Create `frontend/app/components/useRequireAuth.ts` (client hook: no token or `/auth/me` fails → `router.replace('/login')`; returns the current user) and `frontend/app/components/AppHeader.tsx` (logo linking home, "Mes analyses" link, user email, "Se déconnecter" button → clear token → `/login`), reusing the existing header styling from `frontend/app/page.tsx`
-- [ ] T009 [P] [US1] Create `frontend/app/login/page.tsx` and `frontend/app/register/page.tsx` (email + password forms in the existing visual style, French messages, link between the two, redirect to `/` on success)
-- [ ] T010 [US1] Guard `frontend/app/page.tsx` with `useRequireAuth` and replace its inline header with `AppHeader`
+- [X] T006 [US1] Add an `APIRouter` in `backend/auth.py` per contracts/api.md: `POST /api/v1/auth/register` (`EmailStr`, password "at least 8 characters", `409` if email exists case-insensitively, returns token + user, status 201), `POST /api/v1/auth/login` (one generic `401` message for unknown email or wrong password), `GET /api/v1/auth/me`; include it in `backend/main.py`
+- [X] T007 [P] [US1] In `frontend/app/lib/api.ts`: token get/set/clear in `localStorage` (guarded for SSR), an `authFetch` helper adding the bearer header and, on `401`, clearing the token and redirecting to `/login`; `register`, `login`, `logout`, `getMe` functions
+- [X] T008 [P] [US1] Create `frontend/app/components/useRequireAuth.ts` (client hook: no token or `/auth/me` fails → `router.replace('/login')`; returns the current user) and `frontend/app/components/AppHeader.tsx` (logo linking home, "Mes analyses" link, user email, "Se déconnecter" button → clear token → `/login`), reusing the existing header styling from `frontend/app/page.tsx`
+- [X] T009 [P] [US1] Create `frontend/app/login/page.tsx` and `frontend/app/register/page.tsx` (email + password forms in the existing visual style, French messages, link between the two, redirect to `/` on success)
+- [X] T010 [US1] Guard `frontend/app/page.tsx` with `useRequireAuth` and replace its inline header with `AppHeader`
 
 **Checkpoint**: quickstart 1-3, 8 pass; the upload still fails until US2 (401), expected.
 
