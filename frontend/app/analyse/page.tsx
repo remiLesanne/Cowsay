@@ -117,16 +117,12 @@ export default function AnalysePage() {
           {error && <span className="rounded-full bg-rose-50 px-3 py-1.5 text-xs font-medium text-rose-700">Échec de l’analyse</span>}
         </div>
 
-        <div className="mt-6 flex flex-col items-start justify-between gap-4 rounded-xl border border-slate-200 bg-white px-5 py-4 text-sm text-slate-500 sm:flex-row sm:items-center">
-          <span>{error || (isAnalysing ? 'Le fichier est en cours d’analyse.' : result ? 'L’analyse est terminée.' : file ? 'Le contenu est prêt pour l’analyse des risques AI Act.' : 'Votre sélection a peut-être expiré.')}</span>
-          {!file && <Link className="font-medium text-[#277da1] hover:underline" href="/">Sélectionner un fichier</Link>}
-        </div>
 
         {result?.representation && (
           <section className="mt-6 overflow-hidden rounded-xl border border-slate-200 bg-white">
             <div className="flex items-center justify-between border-b border-slate-200 px-5 py-4">
-              <h2 className="text-sm font-semibold text-slate-800">Sortie Repomix — Markdown</h2>
-              <span className="text-xs text-slate-400">Générée par le backend</span>
+              <h2 className="text-sm font-semibold text-slate-800">Synthèse du projet — Markdown</h2>
+              <span className="text-xs text-slate-400">Générée à {new Date().toLocaleTimeString()}</span>
             </div>
             <pre className="max-h-[700px] overflow-auto whitespace-pre-wrap p-6 text-left font-mono text-[13px] leading-6 text-slate-700">
               {result.representation}
