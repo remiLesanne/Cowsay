@@ -17,8 +17,8 @@ logging.basicConfig(level=logging.INFO)
 COMPLIANCE_CHECKER_URL = (
     "https://artificialintelligenceact.eu/assessment/eu-ai-act-compliance-checker/embedded/"
 )
-LLM_API_URL = "https://api.z.ai/api/paas/v4/chat/completions"
-LLM_MODEL = os.environ.get("ZAI_MODEL", "glm-4.5-flash")
+LLM_API_URL = "https://api.mistral.ai/v1/chat/completions"
+LLM_MODEL = os.environ.get("MISTRAL_MODEL", "mistral-small-latest")
 MAX_ITERATIONS = 30
 NAVIGATION_TIMEOUT_MS = 60000
 DOM_SETTLE_TIMEOUT_MS = 500
@@ -29,7 +29,7 @@ _http_client: httpx.AsyncClient | None = None
 def _get_http_client() -> httpx.AsyncClient:
     # Reused across every LLM call in the process instead of one AsyncClient
     # per call, so httpx's connection pool can keep the TLS/TCP connection to
-    # Z.AI alive between questions instead of renegotiating it every time.
+    # the LLM API alive between questions instead of renegotiating it every time.
     global _http_client
     if _http_client is None:
         _http_client = httpx.AsyncClient(timeout=120)
@@ -121,9 +121,9 @@ def _extract_results_section(body_text: str) -> str:
 
 
 async def _ask_llm_for_answer(field: dict, retrieved_code_text: str, extra_context: str) -> dict:
-    api_key = os.environ.get("ZAI_API_KEY")
+    api_key = os.environ.get("MISTRAL_API_KEY")
     if not api_key:
-        raise HTTPException(status_code=503, detail="ZAI_API_KEY n’est pas configurée sur le serveur")
+        raise HTTPException(status_code=503, detail="MISTRAL_API_KEY n’est pas configurée sur le serveur")
 
     question = _strip_html(field["question"])
     if field["type"] in ("radio", "checkbox"):

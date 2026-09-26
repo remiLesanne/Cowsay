@@ -50,9 +50,9 @@ If there are no real gaps, reply with an empty gaps array."""
 
 
 async def generate_project_summary(code_context: str, extra_context: str) -> dict:
-    api_key = os.environ.get("ZAI_API_KEY")
+    api_key = os.environ.get("MISTRAL_API_KEY")
     if not api_key:
-        raise HTTPException(status_code=503, detail="ZAI_API_KEY n’est pas configurée sur le serveur")
+        raise HTTPException(status_code=503, detail="MISTRAL_API_KEY n’est pas configurée sur le serveur")
 
     prompt = PROMPT_TEMPLATE.format(
         extra_context=extra_context or "(none provided)",

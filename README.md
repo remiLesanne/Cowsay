@@ -66,16 +66,19 @@ single-process session cache (30min TTL) shared by specs 002-004; doesn't
 survive a restart or scale beyond one instance (documented trade-off, not an
 oversight).
 
-**LLM latency, measured live**: the dominant cost anywhere an LLM call
-happens is the call itself, not our code — `glm-4.5-flash` (the actual free
-Z.AI model in use) has been observed taking anywhere from 0.3s to 80+s per
-call under real conditions; `glm-4.7-flash` was worse (mostly `429`
-"temporarily overloaded"). Backend-side waste that *was* fixable has been
+**LLM provider history**: originally Z.AI (`glm-4.5-flash`, free tier). Live
+benchmarking found its per-call latency wildly inconsistent (0.3s to 80+s
+under real conditions) and `glm-4.7-flash` even worse (mostly `429`
+"temporarily overloaded"). Switched to **Mistral's free API**
+(`mistral-small-latest`) after live-benchmarking it the same way: 8
+back-to-back calls all landed under 1s, no throttling, no cold starts — see
+git history on `feature/two-stage-analysis` for the raw numbers. Backend-side
+waste that *was* fixable regardless of provider has also been fixed
 (redundant HuggingFace Hub network checks on every request, a fresh TLS
-connection per LLM call) — see git history on `feature/human-in-the-loop-answers`
-for the before/after numbers. Spec 004 doesn't reduce the number of
-per-question LLM calls during form-filling; it reduces wasted full
-form-filling runs by surfacing gaps before running the browser.
+connection per LLM call — see `feature/human-in-the-loop-answers` history).
+Spec 004 doesn't reduce the number of per-question LLM calls during
+form-filling; it reduces wasted full form-filling runs by surfacing gaps
+before running the browser.
 
 ## API
 
@@ -137,11 +140,11 @@ Allowed origins hardcoded in `main.py`: `localhost:3000`,
 
 ## Required env vars (backend)
 
-- `ZAI_API_KEY` — required for `/api/v1/compliance-check` (LLM calls go to
-  Z.AI's API, `api.z.ai/api/paas/v4/chat/completions`, OpenAI-compatible).
-- `ZAI_MODEL` — optional, defaults to `glm-4.5-flash` (free on Z.AI; `glm-4.6`
-  and other non-Flash models require paid credit — confirmed via a 401/1113
-  "Insufficient balance" error during testing).
+- `MISTRAL_API_KEY` — required for every LLM call (project summary + form
+  answers), Mistral's La Plateforme API (`api.mistral.ai/v1/chat/completions`,
+  OpenAI-compatible). Free tier — live-benchmarked as fast and stable (see
+  above); get a key at [console.mistral.ai](https://console.mistral.ai).
+- `MISTRAL_MODEL` — optional, defaults to `mistral-small-latest`.
 
 ## Run locally
 
@@ -168,7 +171,7 @@ npm ci && npm run dev
 ```
 
 Docker: `cd backend && docker build -t cowsay-backend . && docker run --rm -p 8000:8000 cowsay-backend`
-(pass `-e ZAI_API_KEY=...`).
+(pass `-e MISTRAL_API_KEY=...`).
 
 ## Deployment
 
@@ -187,7 +190,7 @@ CI/CD: `.github/workflows/deploy.yml` runs on every push to `main` —
 checkout, AWS auth (`us-east-1`), Docker Buildx with GitHub Actions layer
 cache (`type=gha`), build+push to ECR, fetch the current ECS task definition,
 swap in the new image, deploy to Fargate. Needs `AWS_ACCESS_KEY_ID` /
-`AWS_SECRET_ACCESS_KEY` GitHub secrets, and `ZAI_API_KEY` set on the
+`AWS_SECRET_ACCESS_KEY` GitHub secrets, and `MISTRAL_API_KEY` set on the
 ECS task definition for compliance-check to work in production.
 
 ## Git workflow for this repo
@@ -240,7 +243,7 @@ Not done yet (from the original brief):
 - No automated tests yet for any backend endpoint — every verification in
   this project so far has been live manual/scripted testing against the real
   API, not a committed test suite.
-- `ZAI_API_KEY` is not wired into the ECS task definition / CI secrets.
+- `MISTRAL_API_KEY` is not wired into the ECS task definition / CI secrets.
 - Session cache (`session_store.py`) is in-memory/single-process — lost on
   restart, doesn't scale beyond one instance (documented trade-off, not an
   oversight).
