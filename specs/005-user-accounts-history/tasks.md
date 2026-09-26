@@ -80,8 +80,8 @@
 ## Phase 6: Polish & Cross-Cutting
 
 - [ ] T022 Run all [quickstart.md](quickstart.md) scenarios end-to-end, including the backend-restart persistence check; `npx tsc --noEmit`, `npm run lint`, `npm run build` in `frontend/`
-- [ ] T023 [P] Update `README.md`: auth + history endpoints, new env vars (`DATABASE_URL`, `JWT_SECRET`), local Postgres setup, accepted trade-offs (client-side logout, localStorage token, `create_all`), move "No database or auth" from "Not done yet" to "Done", note the text-answer fix; keep it dense (constitution V)
-- [ ] T024 [P] Update `specs/003-human-in-loop-answers/spec.md` Status/notes to reference the text-answer fix done in spec 005
+- [X] T023 [P] Update `README.md`: auth + history endpoints, new env vars (`DATABASE_URL`, `JWT_SECRET`), local Postgres setup, accepted trade-offs (client-side logout, localStorage token, `create_all`), move "No database or auth" from "Not done yet" to "Done", note the text-answer fix; keep it dense (constitution V)
+- [X] T024 [P] Update `specs/003-human-in-loop-answers/spec.md` Status/notes to reference the text-answer fix done in spec 005
 
 ---
 
