@@ -19,66 +19,52 @@ acceptance criteria).
 Next.js frontend (frontend/)  --HTTP-->  FastAPI backend (backend/)
                                              |
              /api/v1/analyses                       (Repomix only: code -> AI-readable text)
-             /api/v1/compliance-check/analyze        (Repomix + one LLM call -> summary + gaps)
-             /api/v1/compliance-check/{id}/resolve-gaps (regenerate the summary with more info)
-             /api/v1/compliance-check/{id}/run       (Playwright agent, using the summary -> checker verdict)
-             /api/v1/compliance-check/{id}/answer    (reactive fallback for anything `run` still flagged)
-             /api/v1/compliance-check                (older single-call flow, kept working, see below)
+             /api/v1/compliance-check                (Repomix + Playwright agent -> checker verdict, one call)
+             /api/v1/compliance-check/{id}/answer    (resume with human answers for unresolved questions)
 ```
 
-Current default flow (`specs/004-two-stage-analysis/`): **understand, then fill**.
-1. `analyze` — Repomix converts the upload, then one LLM call
-   (`backend/project_summary.py`) produces a coherent summary of the system
-   and an explicit list of information gaps — before any browser automation
-   runs, so gaps surface upfront instead of only being discoverable by
-   running the whole (slow) form-filling loop once already.
-2. `resolve-gaps` (optional, repeatable) — the user answers a gap directly or
-   uploads an extra document; the summary is regenerated from scratch each
-   time (code + all extra material so far), so it stays one coherent
-   document rather than a patchwork.
-3. `run` — `backend/compliance_agent.py` drives a headless Chromium through
-   the official checker's form (a dynamic branching questionnaire — WS Form
-   plugin — questions appear as earlier ones are answered, results computed
-   by the site's own JS). **We drive the real page rather than
-   reimplementing its logic**, so the recommendation is guaranteed identical
-   to what a human would get. Each question is answered using the current
-   summary as context (not per-question code retrieval — see
-   `specs/004-two-stage-analysis/research.md` for why). Anything still
-   answered with low confidence goes into `needs_human_input`, never
-   silently guessed.
-4. `answer` (spec 003, unchanged) — resumes `run` with human answers for
-   anything `needs_human_input` flagged, validated against the question's
-   real options before any browser automation runs again.
+`POST /api/v1/compliance-check` is the one-shot flow (specs 002/003): upload
+→ Repomix → `backend/compliance_agent.py` drives a headless Chromium through
+the official checker's form (a dynamic branching questionnaire — WS Form
+plugin — questions appear as earlier ones are answered, results computed by
+the site's own JS). **We drive the real page rather than reimplementing its
+logic**, so the recommendation is guaranteed identical to what a human would
+get. Each question is answered from the code chunks most relevant to it
+(`backend/code_index.py` — LlamaIndex + a local HuggingFace embedding model,
+no external embeddings API), not the whole project at once. Anything
+answered with low confidence goes into `needs_human_input` — with the real
+options the checker itself offers — instead of being silently guessed;
+`POST .../{session_id}/answer` resumes with human-provided answers (session
+cached server-side in `backend/session_store.py`, in-memory, 30min TTL,
+doesn't survive a restart or scale beyond one instance — documented
+trade-off), validated against the real options before any browser automation
+runs again. **Known limit**: `code_index.py`'s indexing throughput is
+~91 KB/s — fine up to tens of MB, but a true 500MB project would take on the
+order of 90 minutes to index synchronously (not solved — see
+`specs/002-rag-code-retrieval/research.md`).
 
-`POST /api/v1/compliance-check` (specs 002/003's original single-call
-endpoint: upload → full result in one call) **still exists and still works
-exactly as before** — kept for backward compatibility, not deleted. It uses
-`backend/code_index.py` (LlamaIndex + a local HuggingFace embedding model, no
-external embeddings API) for per-question retrieval instead of a summary.
-That module stays fully functional; the new default flow above just doesn't
-call it. **Known limit** (inherited, not fixed by spec 004): its indexing
-throughput is ~91 KB/s — fine up to tens of MB, but a true 500MB project
-would take on the order of 90 minutes to index synchronously.
+**A two-stage variant was tried and reverted** (`specs/004-two-stage-analysis/`):
+summarize the whole project once, surface information gaps to the human
+*before* running the browser, then fill the form from that summary instead
+of per-question retrieval. It worked and was verified live, but became
+unnecessary once the LLM provider switch below made a full form-filling run
+fast enough (~10s) that avoiding one wasn't worth the extra
+`analyze`/`resolve-gaps`/`run` round-trips. Code was removed; the spec is
+kept as a record of what was tried and why — see its `spec.md` Status.
 
 `backend/Dockerfile` — Python + Node (for Repomix) + Playwright/Chromium +
-pre-downloaded embedding model. `backend/session_store.py` — in-memory,
-single-process session cache (30min TTL) shared by specs 002-004; doesn't
-survive a restart or scale beyond one instance (documented trade-off, not an
-oversight).
+pre-downloaded embedding model.
 
-**LLM provider history**: originally Z.AI (`glm-4.5-flash`, free tier). Live
-benchmarking found its per-call latency wildly inconsistent (0.3s to 80+s
-under real conditions) and `glm-4.7-flash` even worse (mostly `429`
-"temporarily overloaded"). Switched to **Mistral's free API**
-(`mistral-small-latest`) after live-benchmarking it the same way: 8
-back-to-back calls all landed under 1s, no throttling, no cold starts — see
-git history on `feature/two-stage-analysis` for the raw numbers. Backend-side
-waste that *was* fixable regardless of provider has also been fixed
-(redundant HuggingFace Hub network checks on every request, a fresh TLS
-connection per LLM call — see `feature/human-in-the-loop-answers` history).
-Spec 004 doesn't reduce the number of per-question LLM calls during
-form-filling; it reduces wasted full form-filling runs by surfacing gaps
-before running the browser.
+**LLM provider**: **Mistral's free API** (`mistral-small-latest`). Originally
+Z.AI (`glm-4.5-flash`, free tier) — live benchmarking found its per-call
+latency wildly inconsistent (0.3s to 80+s under real conditions) and
+`glm-4.7-flash` even worse (mostly `429` "temporarily overloaded"). Switched
+after live-benchmarking Mistral the same way: 8 back-to-back calls all
+landed under 1s, no throttling, no cold starts. A full one-shot compliance
+check now completes in ~7-10s end-to-end, down from 40-80s+ for a single
+question on Z.AI. Backend-side waste that *was* fixable regardless of
+provider has also been fixed (redundant HuggingFace Hub network checks on
+every request, a fresh TLS connection per LLM call).
 
 ## API
 
@@ -86,18 +72,9 @@ before running the browser.
 Upload a file/zip (`file`), optional `output_format` (`xml`|`markdown`).
 Returns the Repomix representation of the project. No compliance logic.
 
-### `POST /api/v1/compliance-check/analyze`
-Upload a file/zip (`file`), optional `company_name`, `company_context`.
-Returns `{session_id, filename, file_count, summary, gaps}` where `gaps` is
-`[{id, description}]`.
-
-### `POST /api/v1/compliance-check/{session_id}/resolve-gaps`
-Form fields: `answers` (JSON string, `[{"gap_id": "...", "text": "..."}]`)
-and/or `file` (an extra document, read as plain text). Regenerates and
-returns `{session_id, summary, gaps}`.
-
-### `POST /api/v1/compliance-check/{session_id}/run`
-No body. Runs the actual form-filling using the session's current summary.
+### `POST /api/v1/compliance-check`
+Upload a file/zip (`file`), optional `company_name`, `company_context` (free
+text, e.g. policy doc contents). Runs Repomix, then the compliance agent.
 Returns:
 ```json
 {
@@ -113,23 +90,16 @@ Returns:
 ```
 
 ### `POST /api/v1/compliance-check/{session_id}/answer`
-Resume a `run` with human-provided answers, without re-uploading the file.
-Body:
+Resume a check with human-provided answers, without re-uploading the file
+(reuses the code index cached from the first call). Body:
 ```json
 {"answers": [{"field_id": "wsf-1-field-57-row-1", "value": "Provider"}]}
 ```
 `value` is a string for `radio`/text-like fields, a string array for
-`checkbox`. Returns the same shape as `run`. `400` if a multiple-choice value
-isn't one of that question's real options (before any browser automation
-runs); `404` if `session_id` is unknown or its 30-minute TTL expired.
-
-### `POST /api/v1/compliance-check` (legacy, still functional)
-The original single-call flow from specs 002/003: upload + optional
-`company_name`/`company_context` → full result in one call, using
-per-question code retrieval instead of a summary. Same response shape as
-`run` above (plus `filename`/`file_count`). Used by
-`frontend/app/compliance/page.tsx` (the bare-bones test page); not used by
-the main upload flow anymore.
+`checkbox`. Returns the same shape as the original endpoint. `400` if a
+multiple-choice value isn't one of that question's real options (before any
+browser automation runs); `404` if `session_id` is unknown or its 30-minute
+TTL expired.
 
 ### `GET /health`
 Liveness check.
@@ -213,33 +183,29 @@ that should have specs written before implementation.
 
 Done:
 - Repomix conversion endpoint.
-- Two-stage compliance-check flow (`analyze` → `resolve-gaps` → `run` →
-  `answer`, see `specs/004-two-stage-analysis/`): one LLM call produces a
-  coherent project summary + explicit information gaps before any browser
-  automation runs; gaps are resolvable by direct answer or extra document
-  upload; form-filling uses the summary as context. **Validated live
-  end-to-end** (2026-09-26): a plain Flask app got a summary + 8 gaps,
-  resolving 2 by text correctly updated the regenerated summary, and the
-  form-filling run correctly flagged one genuinely ambiguous question for a
-  human instead of guessing.
-- The older single-call flow (`POST /api/v1/compliance-check`, specs
-  002/003) still exists and works, using retrieval (`code_index.py`,
-  LlamaIndex + local embeddings) instead of a summary — kept for backward
-  compatibility. Human-in-the-loop answers (`session_store.py`,
-  `specs/003-human-in-loop-answers/`) work against either flow: unresolved
-  questions come back with real options, an invalid answer is rejected
-  before any browser automation runs, frontend renders radio/checkbox/text
-  inputs.
+- Compliance-check endpoint: drives the real checker form end-to-end. Each
+  question answered from the code chunks relevant to it (`code_index.py`,
+  spec 002). Human-in-the-loop answers (`session_store.py`, spec 003):
+  unresolved questions come back with real options, an invalid answer is
+  rejected before any browser automation runs, frontend renders
+  radio/checkbox/text inputs.
+- Fast, stable LLM provider (Mistral, `mistral-small-latest`) — a full
+  one-shot check now completes in ~7-10s, live-verified after switching from
+  Z.AI (which was 40-80s+ per single question, unusably slow).
 
 Not done yet (from the original brief):
 - Cross-checking the checker's recommendation against the actual AI Act
   article text (the brief asks the agent to independently verify which
   article applies, not just trust the checker's own output).
+- A structured "summary of the verification" report (`needs_human_input` is
+  raw, not written up as a narrative). A two-stage summarize-then-fill
+  approach was built and verified for this (`specs/004-two-stage-analysis/`)
+  but reverted once Mistral made the underlying speed problem it solved
+  moot — revisit if a written summary becomes valuable independent of speed.
 - Visual polish on the frontend compliance-check flow — functional, not
-  designed. `frontend/app/compliance/page.tsx` is a separate bare-bones page
-  hitting the legacy single-call endpoint, for quick API-only testing.
-  `/api/v1/analyses` (Repomix-only output) is no longer used by any page but
-  still exists as an endpoint.
+  designed. `frontend/app/compliance/page.tsx` is a separate bare-bones page,
+  for quick API-only testing. `/api/v1/analyses` (Repomix-only output) is no
+  longer used by any page but still exists as an endpoint.
 - No automated tests yet for any backend endpoint — every verification in
   this project so far has been live manual/scripted testing against the real
   API, not a committed test suite.
@@ -250,13 +216,7 @@ Not done yet (from the original brief):
 - No database or auth: no user model, DB client, or `DATABASE_URL` usage
   anywhere in `backend/` yet, despite being part of the target architecture.
 - True 500MB-project support: upload size limits (`MAX_FILE_SIZE` etc. in
-  `main.py`) haven't been raised for the new flow, and even once raised, the
-  legacy retrieval path's indexing would take ~90 minutes synchronously at
-  current throughput for a project that large — needs background processing
-  or a faster embedding setup (see `specs/002-rag-code-retrieval/research.md`).
-- LLM per-call latency (0.3-80+s observed live on the free `glm-4.5-flash`
-  tier) is not something spec 004 fixes — it reduces wasted *whole
-  form-filling runs*, not the cost of each individual LLM call.
-- One-shot summarization only (no map-reduce for very large projects) — same
-  category of scale gap as the 500MB retrieval limit, deferred the same way
-  (see `specs/004-two-stage-analysis/research.md`).
+  `main.py`) are already raised to 500MB, but `code_index.py`'s indexing
+  would take ~90 minutes synchronously at current throughput for a project
+  that large — needs background processing or a faster embedding setup (see
+  `specs/002-rag-code-retrieval/research.md`).

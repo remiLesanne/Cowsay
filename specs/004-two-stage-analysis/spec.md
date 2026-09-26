@@ -4,7 +4,23 @@
 
 **Created**: 2026-09-26
 
-**Status**: Draft
+**Status**: Implemented, then reverted (2026-09-26). This feature was built,
+verified live end-to-end, and shipped — then explicitly reverted the same day
+after switching the LLM provider from Z.AI to Mistral (see
+`specs/003-human-in-loop-answers/`'s README history / git log). Mistral's
+free tier turned out to be dramatically faster and more consistent than
+Z.AI's (a full form-filling run went from ~76s for one question down to
+~10s for several), which removed the main reason this feature existed: avoiding
+a wasted slow full form-filling run by surfacing gaps upfront. With runs
+that fast, the extra `analyze` → `resolve-gaps` → `run` round-trips cost more
+in complexity than the one potentially-wasted run they were saving. The user
+asked explicitly to go back to the original one-shot flow (`specs/002-rag-code-retrieval/`,
+`specs/003-human-in-loop-answers/`) while keeping Mistral. Application code for
+this feature (`backend/project_summary.py`, the `analyze`/`resolve-gaps`/`run`
+endpoints, and the corresponding frontend UI) was deleted; this spec and its
+plan/research/data-model/tasks docs are kept as a record of what was tried,
+why, and why it was undone — in case project scale or LLM latency
+characteristics change again in the future.
 
 **Input**: User description: "First give the whole project to a first LLM that produces
 a summary of what it understood the project does, listing all information that might be

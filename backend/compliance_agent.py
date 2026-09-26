@@ -248,7 +248,6 @@ async def run_compliance_check_with_index(
     system_name: str | None = None,
     extra_context: str | None = None,
     human_answers: dict[str, str | list[str]] | None = None,
-    summary_context: str | None = None,
 ) -> dict:
     context_parts = []
     if system_name:
@@ -288,20 +287,13 @@ async def run_compliance_check_with_index(
                     if human_value is not None:
                         answer = _human_answer_to_field_answer(field, human_value)
                         source = "human"
-                    elif summary_context is not None:
-                        # specs/004-two-stage-analysis: a coherent project summary
-                        # replaces per-question retrieval as the default context —
-                        # code_index.py stays available (spec 002) but isn't called
-                        # from this path anymore (see research.md).
-                        answer = await _ask_llm_for_answer(field, summary_context, combined_extra_context)
-                        source = "llm-summary"
                     else:
                         question_text = _strip_html(field["question"])
                         retrieved = await asyncio.to_thread(project_index.query, question_text)
                         answer = await _ask_llm_for_answer(
                             field, retrieved.as_prompt_text(), combined_extra_context
                         )
-                        source = "llm-retrieval"
+                        source = "llm"
                     logger.info(
                         "[iter %d] field %s (%s, %s) took %.2fs",
                         iteration, field["id"], field["type"], source, time.monotonic() - field_start,

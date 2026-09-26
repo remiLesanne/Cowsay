@@ -2,7 +2,7 @@
 
 import { ChangeEvent, DragEvent, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { analyzeProject } from './lib/api';
+import { runComplianceCheck } from './lib/api';
 
 const ACCEPTED_EXTENSIONS = ['.py', '.js', '.ts', '.tsx', '.jsx', '.java', '.go', '.rs', '.php', '.rb', '.c', '.cpp', '.cs', '.xml', '.md', '.zip'];
 const ACCEPTED_LABEL = 'Code, XML, Markdown ou ZIP';
@@ -72,11 +72,11 @@ export default function Home() {
     setIsAnalysing(true);
     setMessage('');
     try {
-      const analysis = await analyzeProject(file);
-      sessionStorage.setItem('ai-risk-check-analysis', JSON.stringify({
+      const result = await runComplianceCheck(file);
+      sessionStorage.setItem('ai-risk-check-result', JSON.stringify({
         name: file.name,
         size: file.size,
-        analysis,
+        result,
       }));
       router.push('/analyse');
     } catch (error) {

@@ -1,6 +1,4 @@
-import asyncio
 import io
-import json
 import logging
 import subprocess
 import sys
@@ -18,14 +16,10 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from starlette.responses import Response
 
-load_dotenv()  # must run before compliance_agent reads ZAI_* at import time
+load_dotenv()  # must run before compliance_agent reads MISTRAL_* at import time
 
 import session_store
-from code_index import build_project_index
 from compliance_agent import run_compliance_check, run_compliance_check_with_index
-from project_summary import generate_project_summary
-
-MAX_EXTRA_DOCUMENT_SIZE = 5 * 1024 * 1024
 
 app = FastAPI()
 
@@ -268,113 +262,6 @@ class AnswerItem(BaseModel):
 
 class AnswerRequest(BaseModel):
     answers: list[AnswerItem]
-
-
-@app.post("/api/v1/compliance-check/analyze")
-async def analyze_compliance_check(
-    file: UploadFile = File(...),
-    company_name: str | None = Form(default=None),
-    company_context: str | None = Form(default=None),
-):
-    """specs/004-two-stage-analysis, step 1: understand the project.
-
-    Converts the project to a Repomix representation, then asks an LLM for one
-    coherent summary of the system plus an explicit list of information gaps —
-    before any browser automation runs. See create_compliance_check for the
-    older single-call flow this supersedes (kept for backward compatibility).
-    """
-    representation, source_files, _ = await _convert_upload_to_repomix(file, "markdown")
-    extra_context = f"Company name: {company_name}\n{company_context or ''}".strip()
-
-    project_index, summary = await asyncio.gather(
-        asyncio.to_thread(build_project_index, representation),
-        generate_project_summary(representation, extra_context),
-    )
-
-    session_id = session_store.create_session(
-        project_index, company_name, extra_context, code_context=representation
-    )
-    session = session_store.get_session(session_id)
-    session.summary = summary
-
-    return {
-        "session_id": session_id,
-        "filename": file.filename or "",
-        "file_count": len(source_files),
-        **summary,
-    }
-
-
-@app.post("/api/v1/compliance-check/{session_id}/resolve-gaps")
-async def resolve_gaps(
-    session_id: str,
-    answers: str | None = Form(default=None),
-    file: UploadFile | None = File(default=None),
-):
-    """specs/004-two-stage-analysis, step 2: fill in what the summary is missing.
-
-    `answers` is a JSON-encoded list of {"gap_id": "...", "text": "..."}. Either
-    that or an extra `file` (read as plain text, not run through Repomix — a
-    policy document, not necessarily code) is folded into the session's extra
-    material and the summary is regenerated from scratch (code_context + all
-    extra material so far), so it stays one coherent document rather than a
-    patchwork of appended notes (see research.md).
-    """
-    session = session_store.get_session(session_id)
-    if session is None:
-        raise HTTPException(
-            status_code=404,
-            detail="Session inconnue ou expirée, merci de renvoyer le fichier",
-        )
-
-    if answers:
-        try:
-            parsed_answers = json.loads(answers)
-        except json.JSONDecodeError as error:
-            raise HTTPException(status_code=400, detail="Le champ answers n’est pas un JSON valide") from error
-        for item in parsed_answers:
-            session.extra_documents.append(
-                f"Answer to gap '{item.get('gap_id', '')}': {item.get('text', '')}"
-            )
-
-    if file is not None:
-        content = await file.read(MAX_EXTRA_DOCUMENT_SIZE + 1)
-        if len(content) > MAX_EXTRA_DOCUMENT_SIZE:
-            raise HTTPException(status_code=413, detail="Document trop volumineux (5 Mo maximum)")
-        session.extra_documents.append(
-            f"Uploaded document '{file.filename}':\n{content.decode('utf-8', errors='replace')}"
-        )
-
-    combined_code_context = "\n\n".join([session.code_context, *session.extra_documents])
-    session.summary = await generate_project_summary(combined_code_context, session.extra_context or "")
-
-    return {"session_id": session_id, **session.summary}
-
-
-@app.post("/api/v1/compliance-check/{session_id}/run")
-async def run_analyzed_compliance_check(session_id: str):
-    """specs/004-two-stage-analysis, step 3: fill the form using the summary.
-
-    Uses the session's current summary (post any gap resolution) as context
-    instead of per-question code retrieval (spec 002) — see
-    run_compliance_check_with_index's summary_context parameter.
-    """
-    session = session_store.get_session(session_id)
-    if session is None:
-        raise HTTPException(
-            status_code=404,
-            detail="Session inconnue ou expirée, merci de renvoyer le fichier",
-        )
-
-    result = await run_compliance_check_with_index(
-        session.project_index,
-        system_name=session.system_name,
-        extra_context=session.extra_context,
-        summary_context=session.summary.get("summary", ""),
-    )
-    session.unresolved_by_field_id = _index_unresolved(result["needs_human_input"])
-
-    return {"session_id": session_id, **result}
 
 
 @app.post("/api/v1/compliance-check")

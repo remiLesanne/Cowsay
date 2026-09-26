@@ -1,18 +1,8 @@
 'use client';
 
 import Link from 'next/link';
-import { ChangeEvent, useEffect, useRef, useState } from 'react';
-import { resolveGaps, resumeComplianceCheck, runAnalyzedCheck } from '../lib/api';
-
-type Gap = { id: string; description: string; options?: string[] };
-
-type Analysis = {
-  session_id: string;
-  filename: string;
-  file_count: number;
-  summary: string;
-  gaps: Gap[];
-};
+import { useEffect, useState } from 'react';
+import { resumeComplianceCheck } from '../lib/api';
 
 type UnresolvedQuestion = {
   field_id: string;
@@ -31,16 +21,15 @@ type ComplianceResult = {
   results_text: string;
   questions_answered: number;
   needs_human_input: UnresolvedQuestion[];
+  filename: string;
+  file_count: number;
 };
 
-type StoredState = {
+type StoredResult = {
   name: string;
   size: number;
-  analysis: Analysis;
-  result?: ComplianceResult;
+  result: ComplianceResult;
 };
-
-const STORAGE_KEY = 'ai-risk-check-analysis';
 
 function FileCodeIcon() {
   return <svg aria-hidden="true" className="h-6 w-6" fill="none" viewBox="0 0 24 24"><path d="m8.5 8-4 4 4 4M15.5 8l4 4-4 4M13.5 5l-3 14" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.7" /></svg>;
@@ -52,100 +41,29 @@ function ArrowLeftIcon() {
 
 export default function AnalysePage() {
   const [name, setName] = useState<string | null>(null);
-  const [analysis, setAnalysis] = useState<Analysis | null>(null);
   const [result, setResult] = useState<ComplianceResult | null>(null);
   const [error, setError] = useState('');
-
-  const [gapAnswers, setGapAnswers] = useState<Record<string, string>>({});
-  const [isResolvingGaps, setIsResolvingGaps] = useState(false);
-  const [gapError, setGapError] = useState('');
-  const fileInputRef = useRef<HTMLInputElement>(null);
-
-  const [isRunning, setIsRunning] = useState(false);
-  const [runError, setRunError] = useState('');
-
   const [answers, setAnswers] = useState<Record<string, string | string[]>>({});
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState('');
 
   useEffect(() => {
-    const raw = sessionStorage.getItem(STORAGE_KEY);
+    const raw = sessionStorage.getItem('ai-risk-check-result');
     const timer = window.setTimeout(() => {
       if (!raw) {
-        setError('Aucune analyse trouvée. Retournez au dépôt pour lancer une analyse.');
+        setError('Aucun résultat trouvé. Retournez au dépôt pour lancer une analyse.');
         return;
       }
       try {
-        const stored = JSON.parse(raw) as StoredState;
+        const stored = JSON.parse(raw) as StoredResult;
         setName(stored.name);
-        setAnalysis(stored.analysis);
-        setResult(stored.result ?? null);
+        setResult(stored.result);
       } catch {
-        setError('Impossible de lire l’analyse.');
+        setError('Impossible de lire le résultat de l’analyse.');
       }
     }, 0);
     return () => window.clearTimeout(timer);
   }, []);
-
-  const persist = (nextAnalysis: Analysis, nextResult?: ComplianceResult | null) => {
-    sessionStorage.setItem(STORAGE_KEY, JSON.stringify({ name, analysis: nextAnalysis, result: nextResult ?? null }));
-  };
-
-  const submitGapAnswers = async () => {
-    if (!analysis || isResolvingGaps) return;
-    const payload = Object.entries(gapAnswers)
-      .filter(([, text]) => text.trim() !== '')
-      .map(([gap_id, text]) => ({ gap_id, text }));
-    if (payload.length === 0) return;
-
-    setIsResolvingGaps(true);
-    setGapError('');
-    try {
-      const updated = await resolveGaps(analysis.session_id, payload);
-      const nextAnalysis = { ...analysis, summary: updated.summary, gaps: updated.gaps };
-      setAnalysis(nextAnalysis);
-      setGapAnswers({});
-      persist(nextAnalysis);
-    } catch (submitErr) {
-      setGapError(submitErr instanceof Error ? submitErr.message : 'Erreur inconnue.');
-    } finally {
-      setIsResolvingGaps(false);
-    }
-  };
-
-  const submitExtraDocument = async (event: ChangeEvent<HTMLInputElement>) => {
-    const file = event.target.files?.[0];
-    event.target.value = '';
-    if (!file || !analysis || isResolvingGaps) return;
-
-    setIsResolvingGaps(true);
-    setGapError('');
-    try {
-      const updated = await resolveGaps(analysis.session_id, [], file);
-      const nextAnalysis = { ...analysis, summary: updated.summary, gaps: updated.gaps };
-      setAnalysis(nextAnalysis);
-      persist(nextAnalysis);
-    } catch (submitErr) {
-      setGapError(submitErr instanceof Error ? submitErr.message : 'Erreur inconnue.');
-    } finally {
-      setIsResolvingGaps(false);
-    }
-  };
-
-  const startFormFilling = async () => {
-    if (!analysis || isRunning) return;
-    setIsRunning(true);
-    setRunError('');
-    try {
-      const runResult = await runAnalyzedCheck(analysis.session_id);
-      setResult(runResult);
-      persist(analysis, runResult);
-    } catch (runErr) {
-      setRunError(runErr instanceof Error ? runErr.message : 'Erreur inconnue.');
-    } finally {
-      setIsRunning(false);
-    }
-  };
 
   const setRadioAnswer = (fieldId: string, value: string) => {
     setAnswers((previous) => ({ ...previous, [fieldId]: value }));
@@ -176,7 +94,7 @@ export default function AnalysePage() {
       const updated = await resumeComplianceCheck(result.session_id, payload);
       setResult(updated);
       setAnswers({});
-      if (analysis) persist(analysis, updated);
+      sessionStorage.setItem('ai-risk-check-result', JSON.stringify({ name, result: updated }));
     } catch (submitErr) {
       setSubmitError(submitErr instanceof Error ? submitErr.message : 'Erreur inconnue.');
     } finally {
@@ -187,7 +105,6 @@ export default function AnalysePage() {
   const hasAnswersToSubmit = Object.values(answers).some((value) =>
     Array.isArray(value) ? value.length > 0 : value !== '',
   );
-  const hasGapAnswersToSubmit = Object.values(gapAnswers).some((value) => value.trim() !== '');
 
   return (
     <main className="min-h-screen bg-[#f8fafc] text-slate-900">
@@ -223,90 +140,6 @@ export default function AnalysePage() {
           </div>
         )}
 
-        {analysis && !result && (
-          <>
-            <div className="mt-8 rounded-xl border border-slate-200 bg-white p-6 shadow-[0_12px_40px_rgba(15,23,42,0.05)]">
-              <p className="text-xs font-semibold uppercase tracking-[0.15em] text-[#277da1]">Ce que l’IA a compris du projet</p>
-              <p className="mt-4 whitespace-pre-wrap text-sm leading-6 text-slate-800">{analysis.summary}</p>
-            </div>
-
-            {analysis.gaps.length > 0 && (
-              <div className="mt-6 rounded-xl border border-amber-200 bg-amber-50 p-6">
-                <p className="text-sm font-semibold text-amber-800">
-                  {analysis.gaps.length} information(s) manquante(s) dans le code
-                </p>
-                <p className="mt-1 text-xs text-amber-700">
-                  Répondez directement, ou déposez un document complémentaire ci-dessous — ou ignorez
-                  et lancez quand même le remplissage : ces questions pourront réapparaître plus tard.
-                </p>
-                <ul className="mt-4 space-y-3 text-sm">
-                  {analysis.gaps.map((gap) => (
-                    <li className="rounded-lg bg-white/70 p-3" key={gap.id}>
-                      <p className="text-amber-900">{gap.description}</p>
-                      {gap.options && gap.options.length > 0 ? (
-                        <div className="mt-2 space-y-1.5">
-                          {gap.options.map((option) => (
-                            <label className="flex items-center gap-2 text-sm text-slate-700" key={option}>
-                              <input
-                                checked={gapAnswers[gap.id] === option}
-                                name={`gap-${gap.id}`}
-                                onChange={() => setGapAnswers((previous) => ({ ...previous, [gap.id]: option }))}
-                                type="radio"
-                              />
-                              {option}
-                            </label>
-                          ))}
-                        </div>
-                      ) : (
-                        <input
-                          className="mt-2 block w-full rounded-md border border-amber-300 px-3 py-2 text-sm"
-                          onChange={(event) => setGapAnswers((previous) => ({ ...previous, [gap.id]: event.target.value }))}
-                          placeholder="Votre réponse…"
-                          type="text"
-                          value={gapAnswers[gap.id] ?? ''}
-                        />
-                      )}
-                    </li>
-                  ))}
-                </ul>
-
-                {gapError && <p className="mt-3 text-sm text-rose-700">{gapError}</p>}
-
-                <div className="mt-4 flex flex-wrap items-center gap-3">
-                  <button
-                    className="rounded-lg bg-[#173f5f] px-5 py-2.5 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:bg-slate-300"
-                    disabled={!hasGapAnswersToSubmit || isResolvingGaps}
-                    onClick={submitGapAnswers}
-                    type="button"
-                  >
-                    {isResolvingGaps ? 'Envoi en cours…' : 'Envoyer ces réponses'}
-                  </button>
-                  <button
-                    className="text-sm font-medium text-[#277da1] hover:underline disabled:cursor-not-allowed disabled:text-slate-400"
-                    disabled={isResolvingGaps}
-                    onClick={() => fileInputRef.current?.click()}
-                    type="button"
-                  >
-                    ou déposer un document complémentaire
-                  </button>
-                  <input className="hidden" onChange={submitExtraDocument} ref={fileInputRef} type="file" />
-                </div>
-              </div>
-            )}
-
-            {runError && <p className="mt-4 text-sm text-rose-700">{runError}</p>}
-
-            <button
-              className="mt-6 rounded-lg bg-[#173f5f] px-6 py-3 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:bg-slate-300"
-              disabled={isRunning}
-              onClick={startFormFilling}
-              type="button"
-            >
-              {isRunning ? 'Remplissage du formulaire en cours…' : 'Lancer le remplissage du formulaire'}
-            </button>
-          </>
-        )}
-
         {result && (
           <>
             <div className="mt-8 rounded-xl border border-slate-200 bg-white p-6 shadow-[0_12px_40px_rgba(15,23,42,0.05)]">
@@ -321,7 +154,7 @@ export default function AnalysePage() {
                   {result.needs_human_input.length} question(s) nécessitent une réponse humaine
                 </p>
                 <p className="mt-1 text-xs text-amber-700">
-                  L’IA n’a pas trouvé assez d’information pour répondre avec confiance.
+                  L’IA n’a pas trouvé assez d’information dans le code pour répondre avec confiance.
                   Répondez ci-dessous puis envoyez pour continuer l’analyse.
                 </p>
                 <ul className="mt-4 space-y-4 text-sm">
