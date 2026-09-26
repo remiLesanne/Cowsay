@@ -4,7 +4,7 @@ import Link from 'next/link';
 import { ChangeEvent, useEffect, useRef, useState } from 'react';
 import { resolveGaps, resumeComplianceCheck, runAnalyzedCheck } from '../lib/api';
 
-type Gap = { id: string; description: string };
+type Gap = { id: string; description: string; options?: string[] };
 
 type Analysis = {
   session_id: string;
@@ -243,13 +243,29 @@ export default function AnalysePage() {
                   {analysis.gaps.map((gap) => (
                     <li className="rounded-lg bg-white/70 p-3" key={gap.id}>
                       <p className="text-amber-900">{gap.description}</p>
-                      <input
-                        className="mt-2 block w-full rounded-md border border-amber-300 px-3 py-2 text-sm"
-                        onChange={(event) => setGapAnswers((previous) => ({ ...previous, [gap.id]: event.target.value }))}
-                        placeholder="Votre réponse…"
-                        type="text"
-                        value={gapAnswers[gap.id] ?? ''}
-                      />
+                      {gap.options && gap.options.length > 0 ? (
+                        <div className="mt-2 space-y-1.5">
+                          {gap.options.map((option) => (
+                            <label className="flex items-center gap-2 text-sm text-slate-700" key={option}>
+                              <input
+                                checked={gapAnswers[gap.id] === option}
+                                name={`gap-${gap.id}`}
+                                onChange={() => setGapAnswers((previous) => ({ ...previous, [gap.id]: option }))}
+                                type="radio"
+                              />
+                              {option}
+                            </label>
+                          ))}
+                        </div>
+                      ) : (
+                        <input
+                          className="mt-2 block w-full rounded-md border border-amber-300 px-3 py-2 text-sm"
+                          onChange={(event) => setGapAnswers((previous) => ({ ...previous, [gap.id]: event.target.value }))}
+                          placeholder="Votre réponse…"
+                          type="text"
+                          value={gapAnswers[gap.id] ?? ''}
+                        />
+                      )}
                     </li>
                   ))}
                 </ul>

@@ -22,11 +22,21 @@ Write:
 1. A coherent, factual summary (a few paragraphs) of what this system does, based only \
 on the code and context below. Do not invent facts not supported by the material.
 2. A list of information gaps: specific categories of information the compliance form \
-is likely to need that this code/context does NOT tell you (e.g. "which EU member \
-state(s) the system operates in", "whether the system is placed on the market or only \
-used internally", "the system's intended purpose in the deployer's own words"). Each gap \
-needs a short stable id (lowercase, hyphens) and a human-readable description explaining \
-what's missing and why it matters for the AI Act assessment.
+is likely to need that this code/context does NOT tell you.
+
+The real compliance form is itself multiple-choice wherever possible — match that. For \
+each gap, if the answer space is naturally small (yes/no, a short enumerable list, "not \
+sure"), give 3-5 short concrete answer options a non-expert user could just click, \
+instead of making them write a paragraph. Only omit options (empty list) when the answer \
+is genuinely open-ended free text (e.g. "describe the system's intended purpose in your \
+own words", "list the EU member states you operate in"). Prefer options over free text \
+whenever a reasonable person could answer by picking one of a handful of choices — this \
+is the default, free text is the exception.
+
+Each gap needs: a short stable id (lowercase, hyphens), a human-readable description \
+explaining what's missing and why it matters for the AI Act assessment, and an "options" \
+array (may be empty per the rule above; include "Not sure" as one of the options whenever \
+useful).
 
 Extra context about the company/system (may be empty):
 {extra_context}
@@ -35,7 +45,7 @@ Codebase representation (may be truncated):
 {code_context}
 
 Respond with ONLY a JSON object of this exact shape, no other text:
-{{"summary": "...", "gaps": [{{"id": "...", "description": "..."}}]}}
+{{"summary": "...", "gaps": [{{"id": "...", "description": "...", "options": ["...", "..."]}}]}}
 If there are no real gaps, reply with an empty gaps array."""
 
 

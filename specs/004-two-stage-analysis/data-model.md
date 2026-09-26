@@ -13,6 +13,7 @@
 |---|---|---|
 | `id` | string | Stable slug (e.g. `"eu-market-activity"`) so a resolution can reference it. |
 | `description` | string | Human-readable: what's missing and why it matters. |
+| `options` | string[] | **Added post-launch (2026-09-26)**, per direct user feedback: the real checker form is multiple-choice wherever possible, so gap resolution should match that instead of defaulting to free text — "we lose time and may answer with irrelevant information" otherwise. Populated whenever the answer space is small (yes/no, a short enumerable list, "Not sure"); empty only for genuinely open-ended gaps (e.g. "describe the intended purpose in your own words"). Frontend renders radio buttons when non-empty, a text input otherwise. |
 
 ## ComplianceSession (extends spec 003's session)
 
