@@ -10,7 +10,7 @@ from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.responses import Response
 
-load_dotenv()  # must run before compliance_agent reads OPENROUTER_* at import time
+load_dotenv()  # must run before compliance_agent reads ZAI_* at import time
 
 from compliance_agent import run_compliance_check
 

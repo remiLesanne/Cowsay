@@ -30,7 +30,7 @@ Next.js frontend (frontend/)  --HTTP-->  FastAPI backend (backend/)
   site's own JS. **We drive the real page rather than reimplementing its
   logic**, so the returned recommendation is guaranteed identical to what a
   human would get — no risk of drift from a reimplementation.
-  - Loop: scan visible questions -> ask an LLM (OpenRouter) to answer each
+  - Loop: scan visible questions -> ask an LLM (Z.AI, GLM models) to answer each
     from the Repomix code text + optional company context -> click/fill ->
     repeat until no new questions appear -> scrape the "Your results" section
     of the page as plain text.
@@ -70,10 +70,9 @@ Allowed origins hardcoded in `main.py`: `localhost:3000`,
 
 ## Required env vars (backend)
 
-- `OPENROUTER_API_KEY` — required for `/api/v1/compliance-check` (LLM calls
-  go through OpenRouter, OpenAI-compatible). Free models used by the team:
-  `z-ai/glm-5.2:free`, `deepseek/deepseek-v4-flash-0731:free`.
-- `OPENROUTER_MODEL` — optional, defaults to `z-ai/glm-5.2:free`.
+- `ZAI_API_KEY` — required for `/api/v1/compliance-check` (LLM calls go to
+  Z.AI's API, `api.z.ai/api/paas/v4/chat/completions`, OpenAI-compatible).
+- `ZAI_MODEL` — optional, defaults to `glm-4.6`.
 
 ## Run locally
 
@@ -93,7 +92,7 @@ npm ci && npm run dev
 ```
 
 Docker: `cd backend && docker build -t cowsay-backend . && docker run --rm -p 8000:8000 cowsay-backend`
-(pass `-e OPENROUTER_API_KEY=...`).
+(pass `-e ZAI_API_KEY=...`).
 
 ## Deployment
 
@@ -112,7 +111,7 @@ CI/CD: `.github/workflows/deploy.yml` runs on every push to `main` —
 checkout, AWS auth (`us-east-1`), Docker Buildx with GitHub Actions layer
 cache (`type=gha`), build+push to ECR, fetch the current ECS task definition,
 swap in the new image, deploy to Fargate. Needs `AWS_ACCESS_KEY_ID` /
-`AWS_SECRET_ACCESS_KEY` GitHub secrets, and `OPENROUTER_API_KEY` set on the
+`AWS_SECRET_ACCESS_KEY` GitHub secrets, and `ZAI_API_KEY` set on the
 ECS task definition for compliance-check to work in production.
 
 ## Git workflow for this repo
@@ -138,6 +137,6 @@ Not done yet (from the original brief):
 - Frontend UI for the compliance-check flow (upload + company info form,
   results display) — frontend currently only calls `GET /`.
 - No automated tests yet for either backend endpoint.
-- `OPENROUTER_API_KEY` is not wired into the ECS task definition / CI secrets.
+- `ZAI_API_KEY` is not wired into the ECS task definition / CI secrets.
 - No database or auth: no user model, DB client, or `DATABASE_URL` usage
   anywhere in `backend/` yet, despite being part of the target architecture.

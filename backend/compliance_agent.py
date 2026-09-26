@@ -9,8 +9,8 @@ from playwright.async_api import async_playwright
 COMPLIANCE_CHECKER_URL = (
     "https://artificialintelligenceact.eu/assessment/eu-ai-act-compliance-checker/embedded/"
 )
-OPENROUTER_API_URL = "https://openrouter.ai/api/v1/chat/completions"
-OPENROUTER_MODEL = os.environ.get("OPENROUTER_MODEL", "z-ai/glm-5.2:free")
+LLM_API_URL = "https://api.z.ai/api/paas/v4/chat/completions"
+LLM_MODEL = os.environ.get("ZAI_MODEL", "glm-4.6")
 MAX_CODE_CONTEXT_CHARS = 12000
 MAX_ITERATIONS = 30
 NAVIGATION_TIMEOUT_MS = 60000
@@ -84,9 +84,9 @@ def _extract_results_section(body_text: str) -> str:
 
 
 async def _ask_llm_for_answer(field: dict, code_context: str, extra_context: str) -> dict:
-    api_key = os.environ.get("OPENROUTER_API_KEY")
+    api_key = os.environ.get("ZAI_API_KEY")
     if not api_key:
-        raise HTTPException(status_code=503, detail="OPENROUTER_API_KEY n’est pas configurée sur le serveur")
+        raise HTTPException(status_code=503, detail="ZAI_API_KEY n’est pas configurée sur le serveur")
 
     question = _strip_html(field["question"])
     if field["type"] in ("radio", "checkbox"):
@@ -120,10 +120,10 @@ async def _ask_llm_for_answer(field: dict, code_context: str, extra_context: str
 
     async with httpx.AsyncClient(timeout=60) as client:
         response = await client.post(
-            OPENROUTER_API_URL,
+            LLM_API_URL,
             headers={"Authorization": f"Bearer {api_key}"},
             json={
-                "model": OPENROUTER_MODEL,
+                "model": LLM_MODEL,
                 "messages": [{"role": "user", "content": prompt}],
             },
         )
