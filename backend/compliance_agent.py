@@ -212,16 +212,36 @@ def _describe_unresolved_field(field: dict, answer: dict) -> dict:
     return described
 
 
+CLICK_TIMEOUT_MS = 5000
+
+
 async def _apply_answer(page, field: dict, answer: dict) -> None:
     if field["type"] in ("radio", "checkbox"):
         selected = {value.strip().lower() for value in answer.get("selected", [])}
         for option in field["options"]:
             if _strip_html(option["value"]).strip().lower() in selected:
-                await page.click(f"#{option['id']}")
+                try:
+                    await page.click(f"#{option['id']}", timeout=CLICK_TIMEOUT_MS)
+                except Exception:
+                    # An option that was visible when we scanned the page can stop
+                    # being clickable by the time we get here — e.g. an earlier
+                    # answer applied in this same pass toggled conditional logic
+                    # that hides this specific option (observed live 2026-09-26,
+                    # replaying human answers across several checkbox groups).
+                    # Skipping it is the same "don't crash on a branching quirk"
+                    # principle as the retrieval fallback in code_index.py — the
+                    # form's own logic decides what's still relevant, not us.
+                    logger.warning(
+                        "Could not click option %s for field %s (no longer visible?)",
+                        option["id"], field["id"],
+                    )
     else:
         text = answer.get("text", "")
         if text and field.get("inputId"):
-            await page.fill(f"#{field['inputId']}", text)
+            try:
+                await page.fill(f"#{field['inputId']}", text, timeout=CLICK_TIMEOUT_MS)
+            except Exception:
+                logger.warning("Could not fill field %s (no longer visible?)", field["id"])
 
 
 async def run_compliance_check(
