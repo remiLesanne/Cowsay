@@ -199,9 +199,6 @@ Not done yet (from the original brief):
   designed. `frontend/app/compliance/page.tsx` is a separate bare-bones page
   for quick API-only testing. `/api/v1/analyses` (Repomix-only output) is no
   longer used by any page but still exists as an endpoint.
-- A cosmetic DOM-scraping gap: at least one checkbox question's `question`
-  text comes back empty (its `field_id`/`options` are still correct and
-  answerable) — see `specs/003-human-in-loop-answers/tasks.md`.
 - No automated tests yet for any backend endpoint.
 - `ZAI_API_KEY` is not wired into the ECS task definition / CI secrets.
 - Session cache (`session_store.py`) is in-memory/single-process — lost on

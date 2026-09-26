@@ -119,10 +119,17 @@ live test (not introduced by specs 003):
   union (the real form's `text`/`textarea` variants weren't all covered) to render any
   non-choice type as a text input.
 
-**Known remaining issue, not fixed**: at least one checkbox question (Annex I product
-category list) still returns an empty `question` string — the DOM-scraping heuristic in
-`GET_VISIBLE_FIELDS_JS` doesn't find its heading in some page layouts. Cosmetic (the
-`field_id`/`type`/`options` are still correct and answerable) but should be improved.
+**Follow-up fix (same day)**: the empty-`question` bug above turned out not to be purely
+cosmetic — it also made `ProjectIndex.query` crash (an empty query string produces a
+`None` query embedding somewhere in llama-index's similarity computation), silently
+degrading to "no context" for that field every time. Root cause: `GET_VISIBLE_FIELDS_JS`
+broke its backward search as soon as it hit a sibling checkbox/radio field, but this
+form has one heading shared by two side-by-side checklists (Annex I "Section A" /
+"Section B") — the walk now only breaks on a sibling field *after* it has already
+collected a heading, so it keeps looking past a same-question sibling instead of
+stopping short. Verified live: both `field_wrapper-220` and `field_wrapper-103` now
+correctly extract "High-risk AI system: Annex I — Does your AI system fall within any
+of the following high-risk categories?" instead of an empty string.
 
 ---
 

@@ -31,17 +31,31 @@ GET_VISIBLE_FIELDS_JS = """
             const label = el.querySelector('label');
             if (label) return label.innerText.trim();
         }
+        // Some questions are split into several sibling checkbox/radio groups
+        // sharing ONE heading above all of them (e.g. Annex I "Section A" /
+        // "Section B" checklists under a single "High-risk AI system" question).
+        // Skip over sibling answer fields we haven't collected a heading from
+        // yet; only stop once we've found at least one heading and then hit
+        // another answer field (that one belongs to a genuinely earlier
+        // question). Bounded by steps, not by how many fields we pass, since a
+        // shared heading can sit several fields back.
         const parts = [];
         let node = el.previousElementSibling;
         let collected = 0;
-        while (node && collected < 3) {
+        let steps = 0;
+        while (node && collected < 3 && steps < 12) {
             if (node.dataset && node.dataset.type === 'texteditor') {
                 parts.unshift(node.innerText.trim());
                 collected++;
-            } else if (node.dataset && ['radio', 'checkbox', 'text', 'textarea'].includes(node.dataset.type)) {
+            } else if (
+                collected > 0 &&
+                node.dataset &&
+                ['radio', 'checkbox', 'text', 'textarea'].includes(node.dataset.type)
+            ) {
                 break;
             }
             node = node.previousElementSibling;
+            steps++;
         }
         return parts.join('\\n');
     }
