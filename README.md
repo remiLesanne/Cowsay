@@ -92,8 +92,15 @@ python -m venv .venv && source .venv/bin/activate   # Windows: .venv\Scripts\Act
 pip install -r requirements.txt
 python -m playwright install --with-deps chromium   # once, for compliance-check
 cp .env.example .env && edit .env with your key     # loaded automatically at startup
-uvicorn main:app --reload --port 8000
+python run.py                                       # NOT `uvicorn main:app` on Windows — see below
 ```
+
+On Windows, launch with `python run.py` (not the `uvicorn` CLI directly). Playwright
+needs the Proactor event loop to spawn its browser subprocess; that has to be set
+*before* uvicorn creates its loop, which `run.py` does — the `uvicorn main:app` CLI
+creates its loop before `main.py` is even imported, too late to patch from inside it.
+On Linux/macOS/Docker this isn't needed; `uvicorn main:app --reload --port 8000` works
+fine there.
 
 ```bash
 cd frontend
