@@ -10,7 +10,7 @@ type ComplianceResult = {
   questions_answered: number;
   needs_human_input: Array<{ question: string; reasoning: string }>;
   filename: string;
-  file_count: number;
+  file_count?: number;
 };
 
 export default function CompliancePage() {

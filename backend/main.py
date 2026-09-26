@@ -1,9 +1,11 @@
+import hashlib
 import io
 import logging
 import subprocess
 import sys
 import time
 import zipfile
+from contextlib import asynccontextmanager
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import Literal
@@ -11,17 +13,29 @@ from typing import Literal
 logger = logging.getLogger(__name__)
 
 from dotenv import load_dotenv
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import Depends, FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
+from sqlalchemy.orm import Session
 from starlette.responses import Response
 
 load_dotenv()  # must run before compliance_agent reads MISTRAL_* at import time
 
+import auth
+import history
 import session_store
 from compliance_agent import run_compliance_check, run_compliance_check_with_index
+from auth import get_current_user
+from db import Analysis, User, get_db, init_db
 
-app = FastAPI()
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    init_db()  # creates users/analyses tables on first run (specs/005)
+    yield
+
+
+app = FastAPI(lifespan=lifespan)
 
 ALLOWED_EXTENSIONS = {
     ".py", ".js", ".ts", ".tsx", ".jsx", ".java", ".go", ".rs",
@@ -65,6 +79,9 @@ app.add_middleware(
 )
 
 # 2. Ensuite seulement, les routes
+app.include_router(auth.router)
+app.include_router(history.router)
+
 @app.options("/")
 def options_root():
     return Response(status_code=200)
@@ -174,9 +191,23 @@ def _write_zip_to_project(archive: zipfile.ZipFile, project_dir: Path) -> list[s
     return source_files
 
 
+def _fingerprint_project(project_dir: Path) -> str:
+    # Content-based identity of the project (specs/005): hashes the extracted
+    # files, not the upload, so the same code zipped twice (different zip
+    # timestamps) gets the same fingerprint. Only this hash is stored, never
+    # the code (FR-009).
+    digest = hashlib.sha256()
+    for path in sorted(p for p in project_dir.rglob("*") if p.is_file()):
+        digest.update(path.relative_to(project_dir).as_posix().encode())
+        digest.update(b"\0")
+        digest.update(path.read_bytes())
+        digest.update(b"\0")
+    return digest.hexdigest()
+
+
 async def _convert_upload_to_repomix(
     file: UploadFile, output_format: Literal["xml", "markdown"]
-) -> tuple[str, list[str], str]:
+) -> tuple[str, list[str], str, str]:
     filename = file.filename or ""
     extension = Path(filename).suffix.lower()
 
@@ -218,9 +249,10 @@ async def _convert_upload_to_repomix(
             (project_dir / safe_filename).write_bytes(content)
             source_files = [safe_filename]
 
+        fingerprint = _fingerprint_project(project_dir)
         representation = _run_repomix(project_dir, output_format)
 
-    return representation, source_files, extension
+    return representation, source_files, extension, fingerprint
 
 
 @app.post("/api/v1/analyses")
@@ -229,7 +261,7 @@ async def create_analysis(
     output_format: Literal["xml", "markdown"] = "xml",
 ):
     """Convert an uploaded project to an AI-friendly Repomix representation."""
-    representation, source_files, extension = await _convert_upload_to_repomix(file, output_format)
+    representation, source_files, extension, _ = await _convert_upload_to_repomix(file, output_format)
 
     return {
         "analysis_id": "temporary-id",
@@ -269,6 +301,8 @@ async def create_compliance_check(
     file: UploadFile = File(...),
     company_name: str | None = Form(default=None),
     company_context: str | None = Form(default=None),
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
 ):
     """Run the uploaded project through the official EU AI Act Compliance Checker.
 
@@ -277,7 +311,7 @@ async def create_compliance_check(
     with an LLM answering each question from the code (and optional company
     context), returning the checker's own recommendation.
     """
-    representation, source_files, _ = await _convert_upload_to_repomix(file, "markdown")
+    representation, source_files, _, fingerprint = await _convert_upload_to_repomix(file, "markdown")
 
     extra_context = f"Company name: {company_name}\n{company_context or ''}".strip()
     result, project_index = await run_compliance_check(
@@ -286,12 +320,30 @@ async def create_compliance_check(
         extra_context=extra_context,
     )
 
-    session_id = session_store.create_session(project_index, company_name, extra_context)
+    # Saved only once the check succeeded: a failed run raises above and leaves
+    # nothing behind (spec 005 Edge Cases).
+    analysis = Analysis(
+        user_id=user.id,
+        filename=file.filename or "",
+        content_fingerprint=fingerprint,
+        company_name=company_name or None,
+        results_text=result["results_text"],
+        is_complete=result["is_complete"],
+        question_details=result["question_details"],
+        needs_human_input=result["needs_human_input"],
+    )
+    db.add(analysis)
+    db.commit()
+
+    session_id = session_store.create_session(
+        project_index, user.id, analysis.id, company_name, extra_context
+    )
     session = session_store.get_session(session_id)
     session.unresolved_by_field_id = _index_unresolved(result["needs_human_input"])
 
     return {
         "session_id": session_id,
+        "analysis_id": str(analysis.id),
         "filename": file.filename or "",
         "file_count": len(source_files),
         **result,
@@ -299,7 +351,12 @@ async def create_compliance_check(
 
 
 @app.post("/api/v1/compliance-check/{session_id}/answer")
-async def answer_compliance_check(session_id: str, body: AnswerRequest):
+async def answer_compliance_check(
+    session_id: str,
+    body: AnswerRequest,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
     """Resume a compliance check with human-provided answers.
 
     Reuses the ProjectIndex built on the first call (no Repomix re-run, no
@@ -310,15 +367,22 @@ async def answer_compliance_check(session_id: str, body: AnswerRequest):
     30-90s Playwright run.
     """
     session = session_store.get_session(session_id)
-    if session is None:
+    # Someone else's session is reported exactly like an unknown one (FR-014).
+    if session is None or session.user_id != user.id:
         raise HTTPException(
             status_code=404,
             detail="Session inconnue ou expirée, merci de renvoyer le fichier",
         )
 
+    accepted: dict[str, str | list[str]] = {}
     for answer in body.answers:
         unresolved = session.unresolved_by_field_id.get(answer.field_id)
-        if unresolved is None or unresolved["type"] not in ("radio", "checkbox"):
+        if unresolved is None:
+            continue  # no longer part of the form — unused, not an error (spec 003)
+        if unresolved["type"] not in ("radio", "checkbox"):
+            # Free text has no option list to validate against, but must still be
+            # applied — it used to be skipped here and silently lost (spec 005 FR-012).
+            accepted[answer.field_id] = answer.value
             continue
         valid_options = {option.strip().lower() for option in unresolved["options"]}
         submitted = answer.value if isinstance(answer.value, list) else [answer.value]
@@ -332,7 +396,10 @@ async def answer_compliance_check(session_id: str, body: AnswerRequest):
                     "valid_options": unresolved["options"],
                 },
             )
-        session.human_answers[answer.field_id] = answer.value
+        accepted[answer.field_id] = answer.value
+    # Stored only once the whole batch is valid, so a rejected request leaves
+    # the session exactly as it was.
+    session.human_answers.update(accepted)
 
     result = await run_compliance_check_with_index(
         session.project_index,
@@ -342,7 +409,20 @@ async def answer_compliance_check(session_id: str, body: AnswerRequest):
     )
     session.unresolved_by_field_id = _index_unresolved(result["needs_human_input"])
 
-    return {"session_id": session_id, **result}
+    analysis = db.get(Analysis, session.analysis_id)
+    if analysis is not None and analysis.user_id == user.id:
+        analysis.results_text = result["results_text"]
+        analysis.is_complete = result["is_complete"]
+        analysis.question_details = result["question_details"]
+        analysis.needs_human_input = result["needs_human_input"]
+        db.commit()
+
+    return {
+        "session_id": session_id,
+        "analysis_id": str(session.analysis_id),
+        "filename": analysis.filename if analysis else "",
+        **result,
+    }
 
 
 @app.get("/health")

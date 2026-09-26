@@ -200,6 +200,24 @@ def _human_answer_to_field_answer(field: dict, value: str | list[str]) -> dict:
     return {"text": value if isinstance(value, str) else "", "confidence": "human", "reasoning": "Réponse fournie par l’utilisateur"}
 
 
+def _describe_answered_field(field: dict, answer: dict, source: str) -> dict:
+    # Kept for the result screen and the saved analysis (specs/005 FR-010) — the
+    # answer the form actually received, and where it came from.
+    is_choice = field["type"] in ("radio", "checkbox")
+    selected = answer.get("selected") or []
+    if isinstance(selected, str):  # the LLM occasionally returns a bare string
+        selected = [selected]
+    return {
+        "field_id": field["id"],
+        "type": field["type"],
+        "question": _strip_html(field["question"]),
+        "answer": list(selected) if is_choice else answer.get("text", ""),
+        "reasoning": answer.get("reasoning", ""),
+        "confidence": answer.get("confidence", ""),
+        "source": source,
+    }
+
+
 def _describe_unresolved_field(field: dict, answer: dict, reasoning_override: str | None = None) -> dict:
     described = {
         "field_id": field["id"],
@@ -286,6 +304,7 @@ async def run_compliance_check_with_index(
     combined_extra_context = "\n\n".join(context_parts)
 
     processed: dict[str, dict] = {}
+    question_details: list[dict] = []
     unresolved: list[dict] = []
     unresolved_ids: set[str] = set()
     apply_failed: dict[str, tuple[dict, dict]] = {}
@@ -324,12 +343,13 @@ async def run_compliance_check_with_index(
                         answer = await _ask_llm_for_answer(
                             field, retrieved.as_prompt_text(), combined_extra_context
                         )
-                        source = "llm"
+                        source = "ai"
                     logger.info(
                         "[iter %d] field %s (%s, %s) took %.2fs",
                         iteration, field["id"], field["type"], source, time.monotonic() - field_start,
                     )
                     processed[field["id"]] = answer
+                    question_details.append(_describe_answered_field(field, answer, source))
                     if answer.get("confidence") == "low" or (
                         field["type"] in ("radio", "checkbox") and not answer.get("selected")
                     ):
@@ -375,5 +395,6 @@ async def run_compliance_check_with_index(
         "is_complete": is_complete,
         "results_text": results_text,
         "questions_answered": len(processed),
+        "question_details": question_details,
         "needs_human_input": unresolved,
     }

@@ -4,7 +4,9 @@
 
 **Created**: 2026-09-26
 
-**Status**: Draft
+**Status**: Implemented. Note (2026-09-26): free-text answers (US2 scenario 2) were
+silently dropped by the resume endpoint until fixed in
+`specs/005-user-accounts-history/` (FR-012) — only radio/checkbox answers were stored.
 
 **Input**: User description: "when the AI can't answer confidently, it shouldn't waste
 time, and the human should be able to submit an answer via the frontend; the frontend
