@@ -13,7 +13,7 @@ COMPLIANCE_CHECKER_URL = (
     "https://artificialintelligenceact.eu/assessment/eu-ai-act-compliance-checker/embedded/"
 )
 LLM_API_URL = "https://api.z.ai/api/paas/v4/chat/completions"
-LLM_MODEL = os.environ.get("ZAI_MODEL", "glm-4.6")
+LLM_MODEL = os.environ.get("ZAI_MODEL", "glm-4.5-flash")
 MAX_ITERATIONS = 30
 NAVIGATION_TIMEOUT_MS = 60000
 DOM_SETTLE_TIMEOUT_MS = 500

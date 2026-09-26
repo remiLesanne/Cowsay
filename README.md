@@ -82,7 +82,9 @@ Allowed origins hardcoded in `main.py`: `localhost:3000`,
 
 - `ZAI_API_KEY` — required for `/api/v1/compliance-check` (LLM calls go to
   Z.AI's API, `api.z.ai/api/paas/v4/chat/completions`, OpenAI-compatible).
-- `ZAI_MODEL` — optional, defaults to `glm-4.6`.
+- `ZAI_MODEL` — optional, defaults to `glm-4.5-flash` (free on Z.AI; `glm-4.6`
+  and other non-Flash models require paid credit — confirmed via a 401/1113
+  "Insufficient balance" error during testing).
 
 ## Run locally
 
