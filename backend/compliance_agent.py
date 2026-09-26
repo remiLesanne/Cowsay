@@ -1,3 +1,4 @@
+import asyncio
 import json
 import os
 import re
@@ -6,12 +7,13 @@ import httpx
 from fastapi import HTTPException
 from playwright.async_api import async_playwright
 
+from code_index import build_project_index
+
 COMPLIANCE_CHECKER_URL = (
     "https://artificialintelligenceact.eu/assessment/eu-ai-act-compliance-checker/embedded/"
 )
 LLM_API_URL = "https://api.z.ai/api/paas/v4/chat/completions"
 LLM_MODEL = os.environ.get("ZAI_MODEL", "glm-4.6")
-MAX_CODE_CONTEXT_CHARS = 12000
 MAX_ITERATIONS = 30
 NAVIGATION_TIMEOUT_MS = 60000
 DOM_SETTLE_TIMEOUT_MS = 500
@@ -83,7 +85,7 @@ def _extract_results_section(body_text: str) -> str:
     return section.strip()
 
 
-async def _ask_llm_for_answer(field: dict, code_context: str, extra_context: str) -> dict:
+async def _ask_llm_for_answer(field: dict, retrieved_code_text: str, extra_context: str) -> dict:
     api_key = os.environ.get("ZAI_API_KEY")
     if not api_key:
         raise HTTPException(status_code=503, detail="ZAI_API_KEY n’est pas configurée sur le serveur")
@@ -114,7 +116,7 @@ async def _ask_llm_for_answer(field: dict, code_context: str, extra_context: str
         "say so via low confidence rather than inventing facts.\n\n"
         f"Question:\n{question}\n\nOptions:\n{options_block}\n\n"
         f"Extra context about the company/system (may be empty):\n{extra_context or '(none provided)'}\n\n"
-        f"Codebase representation (may be truncated):\n{code_context[:MAX_CODE_CONTEXT_CHARS]}\n\n"
+        f"Codebase excerpts relevant to this question:\n{retrieved_code_text}\n\n"
         f"{answer_instructions}\nRespond with ONLY the JSON object, no other text."
     )
 
@@ -171,6 +173,7 @@ async def run_compliance_check(
 
     processed: dict[str, dict] = {}
     unresolved: list[dict] = []
+    project_index = await asyncio.to_thread(build_project_index, code_context)
 
     async with async_playwright() as playwright:
         browser = await playwright.chromium.launch(headless=True)
@@ -192,7 +195,11 @@ async def run_compliance_check(
                     break
 
                 for field in new_fields:
-                    answer = await _ask_llm_for_answer(field, code_context, combined_extra_context)
+                    question_text = _strip_html(field["question"])
+                    retrieved = await asyncio.to_thread(project_index.query, question_text)
+                    answer = await _ask_llm_for_answer(
+                        field, retrieved.as_prompt_text(), combined_extra_context
+                    )
                     processed[field["id"]] = answer
                     if answer.get("confidence") == "low" or (
                         field["type"] in ("radio", "checkbox") and not answer.get("selected")

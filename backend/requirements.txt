@@ -4,3 +4,5 @@ python-multipart
 httpx
 playwright
 python-dotenv
+llama-index-core
+llama-index-embeddings-huggingface

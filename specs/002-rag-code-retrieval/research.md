@@ -61,6 +61,29 @@ repeated checks of the same project) — explicitly out of scope; nothing in the
 for repeat-analysis performance, and it would add real infrastructure (a database) for a
 benefit not requested.
 
+## Measured: indexing throughput (discovered during implementation)
+
+Local embedding indexing measured at ~91 KB/s of Repomix text on a small CPU-only
+sentence-transformers model (41 chunks / ~100KB project → ~1.1s to index; ~15ms per
+retrieval query afterwards — query cost is negligible, indexing is the bottleneck).
+
+**Implication**: this comfortably fixes the original problem (facts anywhere in a project
+of up to a few tens of MB are now found correctly — see SC-001 validation). It does
+**not** make a 500MB project indexable within a single synchronous HTTP request: at this
+throughput, indexing alone would take on the order of 90 minutes. Raising the upload
+limit to 500MB (spec.md Assumptions) without addressing this would let a request through
+that then times out or hangs.
+
+**Not fixed by this feature — flagged as follow-up, not silently accepted**: making
+500MB genuinely practical needs either (a) background/async processing with a
+job-status endpoint instead of a synchronous response, (b) a faster embedding model or
+batched/GPU inference, or (c) capping how much of a very large project gets indexed
+(e.g. skip generated/vendored code more aggressively than today's
+`IGNORED_ARCHIVE_DIRECTORIES` already does in `main.py`). None of these were in scope
+for this spec (`FR-002` only required "up to the upload limit" without a specific
+500MB target time budget) — recorded here so the next person doesn't assume the numeric
+500MB target was validated end-to-end.
+
 ## Open questions resolved
 
 - **NEEDS CLARIFICATION: embedding provider** → resolved above (local HuggingFace model).

@@ -30,14 +30,24 @@ Next.js frontend (frontend/)  --HTTP-->  FastAPI backend (backend/)
   site's own JS. **We drive the real page rather than reimplementing its
   logic**, so the returned recommendation is guaranteed identical to what a
   human would get — no risk of drift from a reimplementation.
-  - Loop: scan visible questions -> ask an LLM (Z.AI, GLM models) to answer each
-    from the Repomix code text + optional company context -> click/fill ->
-    repeat until no new questions appear -> scrape the "Your results" section
-    of the page as plain text.
+  - Loop: scan visible questions -> retrieve the relevant code for that
+    question (`code_index.py`) -> ask an LLM (Z.AI, GLM models) to answer from
+    that excerpt + optional company context -> click/fill -> repeat until no
+    new questions appear -> scrape the "Your results" section as plain text.
   - Any answer given with low confidence (or left unanswered) is collected
     into `needs_human_input` in the response instead of being silently
     guessed away.
-- `backend/Dockerfile` — Python + Node (for Repomix) + Playwright/Chromium.
+- `backend/code_index.py` — turns a Repomix representation into a queryable,
+  in-memory retrieval index (LlamaIndex + a local HuggingFace embedding model,
+  no external embeddings API — see `specs/002-rag-code-retrieval/research.md`)
+  so each checker question is answered from the code actually relevant to it,
+  regardless of project size, instead of a fixed-size prefix of the whole
+  project. **Known limit**: indexing throughput is ~91 KB/s on the current
+  small CPU model — fine up to tens of MB, but a true 500MB project would take
+  on the order of 90 minutes to index in this synchronous request flow (not
+  yet solved — see that same research.md for options).
+- `backend/Dockerfile` — Python + Node (for Repomix) + Playwright/Chromium +
+  pre-downloaded embedding model.
 - Repomix (`backend/node_modules/.bin/repomix`) converts an uploaded file/zip
   into one AI-friendly text blob; used as the "facts about the code" input to
   both endpoints.
@@ -137,6 +147,13 @@ Done:
 - Compliance-check endpoint: drives the real checker form end-to-end,
   verified manually against the live site (branching logic + result
   scraping both confirmed working).
+- Retrieval-based code context (`code_index.py`, see
+  `specs/002-rag-code-retrieval/`): each checker question is answered from
+  the code actually relevant to it (found via local embeddings), not a
+  fixed-size prefix of the project — validated on a ~100KB synthetic project
+  with a fact placed past the old truncation point. **Not fully validated
+  end-to-end** (no `ZAI_API_KEY` available while building this — someone with
+  the key should re-run `specs/002-rag-code-retrieval/quickstart.md` in full).
 
 Not done yet (from the original brief):
 - Cross-checking the checker's recommendation against the actual AI Act
@@ -150,3 +167,8 @@ Not done yet (from the original brief):
 - `ZAI_API_KEY` is not wired into the ECS task definition / CI secrets.
 - No database or auth: no user model, DB client, or `DATABASE_URL` usage
   anywhere in `backend/` yet, despite being part of the target architecture.
+- True 500MB-project support: upload size limits (`MAX_FILE_SIZE` etc. in
+  `main.py`) haven't been raised yet, and even once raised, indexing a
+  project that large would take ~90 minutes synchronously at current
+  throughput — needs background processing or a faster embedding setup
+  first (see `specs/002-rag-code-retrieval/research.md`).

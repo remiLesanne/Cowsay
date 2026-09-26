@@ -95,11 +95,12 @@ non-empty Repomix representation and the correct file count/list.
   agent can't fill)? → The loop stops after `MAX_ITERATIONS` (30) with whatever
   `results_text` the page shows at that point (may still say "Incomplete"); `is_complete`
   reflects this so the caller can detect it.
-- What happens with a project too large for the LLM's context? → **Known gap, not yet
-  solved** — code context is truncated to `MAX_CODE_CONTEXT_CHARS` (12,000 chars); a
-  large project's relevant facts may fall outside that window and never reach the LLM.
-  See "Not done yet" in README.md; a RAG-based retrieval step is the planned fix but was
-  explicitly deferred by the user (2026-09-26) pending this Spec Kit setup.
+- What happens with a project too large for the LLM's context? → **Resolved by
+  `specs/002-rag-code-retrieval/`**: the fixed `MAX_CODE_CONTEXT_CHARS` truncation was
+  replaced with per-question retrieval (`code_index.py`) so relevant facts are found
+  regardless of position in the project. Validated up to ~100KB synthetic projects;
+  a true 500MB project is still impractical in a single synchronous request at current
+  indexing throughput (~90 min) — see that spec's `research.md` for the remaining gap.
 
 ## Requirements *(mandatory)*
 
