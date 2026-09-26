@@ -33,6 +33,19 @@ export async function analyzeFile(file: File, outputFormat: 'xml' | 'markdown' =
   return response.json();
 }
 
+function detailToMessage(detail: unknown, fallback: string): string {
+  if (!detail) return fallback;
+  if (typeof detail === 'string') return detail;
+  if (typeof detail === 'object' && detail !== null && 'message' in detail) {
+    const withOptions = detail as { message: string; valid_options?: string[] };
+    const options = withOptions.valid_options?.length
+      ? ` (options valides : ${withOptions.valid_options.join(', ')})`
+      : '';
+    return `${withOptions.message}${options}`;
+  }
+  return fallback;
+}
+
 export async function runComplianceCheck(file: File, companyName?: string, companyContext?: string) {
   const formData = new FormData();
   formData.append('file', file);
@@ -46,7 +59,24 @@ export async function runComplianceCheck(file: File, companyName?: string, compa
 
   if (!response.ok) {
     const error = await response.json().catch(() => null);
-    throw new Error(error?.detail || 'Impossible de lancer le compliance-check.');
+    throw new Error(detailToMessage(error?.detail, 'Impossible de lancer le compliance-check.'));
+  }
+
+  return response.json();
+}
+
+export type HumanAnswer = { field_id: string; value: string | string[] };
+
+export async function resumeComplianceCheck(sessionId: string, answers: HumanAnswer[]) {
+  const response = await fetch(`${API_URL}/api/v1/compliance-check/${sessionId}/answer`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ answers }),
+  });
+
+  if (!response.ok) {
+    const error = await response.json().catch(() => null);
+    throw new Error(detailToMessage(error?.detail, 'Impossible d’envoyer la réponse.'));
   }
 
   return response.json();

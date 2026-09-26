@@ -59,18 +59,19 @@ result, without re-sending the file.
       `TestClient`, Playwright/LLM mocked out): first call returns options, invalid
       answer → 400 without triggering the mocked resume call, valid case-insensitive
       answer → 200 with merged `human_answers` passed through, unknown session → 404.
-- [ ] T007 [US1] In `frontend/app/lib/api.ts`, add `resumeComplianceCheck(sessionId,
-      answers)` posting to the new endpoint
-- [ ] T008 [US1] In `frontend/app/analyse/page.tsx`, render each `needs_human_input` item:
-      radio buttons for `type: "radio"` (single choice from `options`), checkboxes for
-      `type: "checkbox"` (multi-select from `options`), a text input for `type: "text"` —
-      per FR-006/SC-003 no free text for a field that has `options`
-- [ ] T009 [US1] Add a "Submit answers" action on `/analyse` that calls
-      `resumeComplianceCheck` with the currently-filled-in answers, replaces the displayed
-      result with the response, and clears/updates the unresolved-questions list
-- [ ] T010 [US1] Run `quickstart.md`'s "answer an unresolved question" scenario manually;
-      confirm no file re-upload occurs and the previously-unresolved question disappears
-      from the new result
+- [X] T007 [US1] Added `resumeComplianceCheck(sessionId, answers)` in
+      `frontend/app/lib/api.ts`, plus a shared `detailToMessage()` helper since the new
+      endpoint's 400 errors are a structured object, not a plain string
+- [X] T008 [US1] `frontend/app/analyse/page.tsx` now renders radio buttons for
+      `type: "radio"`, checkboxes for `type: "checkbox"`, and a text input only for
+      `type: "text"` — no free text for anything with a fixed `options` list (FR-006)
+- [X] T009 [US1] Added "Envoyer mes réponses" button: calls `resumeComplianceCheck` with
+      only the answers actually filled in, replaces `result` with the response, persists
+      it back to `sessionStorage` so a page refresh doesn't lose progress
+- [ ] T010 [US1] NOT run — needs a live `ZAI_API_KEY` + real browser session
+      (environment limitation noted throughout specs 002/003); verified instead via the
+      scripted backend test (T006) plus `tsc`/`eslint`/`next build` all passing for the
+      frontend. Should be re-run manually by someone with API access before merge.
 
 **Checkpoint**: the core loop works end-to-end. Shippable increment.
 
