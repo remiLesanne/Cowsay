@@ -120,15 +120,26 @@ async def _ask_llm_for_answer(field: dict, retrieved_code_text: str, extra_conte
         f"{answer_instructions}\nRespond with ONLY the JSON object, no other text."
     )
 
-    async with httpx.AsyncClient(timeout=60) as client:
-        response = await client.post(
-            LLM_API_URL,
-            headers={"Authorization": f"Bearer {api_key}"},
-            json={
-                "model": LLM_MODEL,
-                "messages": [{"role": "user", "content": prompt}],
-            },
-        )
+    try:
+        async with httpx.AsyncClient(timeout=120) as client:
+            response = await client.post(
+                LLM_API_URL,
+                headers={"Authorization": f"Bearer {api_key}"},
+                json={
+                    "model": LLM_MODEL,
+                    "messages": [{"role": "user", "content": prompt}],
+                },
+            )
+    except httpx.TimeoutException as error:
+        raise HTTPException(
+            status_code=504,
+            detail="Le modèle a mis trop de temps à répondre",
+        ) from error
+    except httpx.RequestError as error:
+        raise HTTPException(
+            status_code=502,
+            detail=f"Impossible de contacter le modèle ({error})",
+        ) from error
 
     if response.status_code != 200:
         raise HTTPException(
