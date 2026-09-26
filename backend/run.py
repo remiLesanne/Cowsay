@@ -14,4 +14,8 @@ if sys.platform == "win32":
 import uvicorn
 
 if __name__ == "__main__":
-    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
+    # reload=False on purpose: uvicorn's --reload spawns the actual server in a
+    # subprocess that does not re-apply the event loop policy set above, so the
+    # NotImplementedError comes back regardless. Restart this script manually
+    # after code changes instead.
+    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=False)
