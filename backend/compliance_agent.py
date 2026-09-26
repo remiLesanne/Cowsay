@@ -200,12 +200,12 @@ def _human_answer_to_field_answer(field: dict, value: str | list[str]) -> dict:
     return {"text": value if isinstance(value, str) else "", "confidence": "human", "reasoning": "Réponse fournie par l’utilisateur"}
 
 
-def _describe_unresolved_field(field: dict, answer: dict) -> dict:
+def _describe_unresolved_field(field: dict, answer: dict, reasoning_override: str | None = None) -> dict:
     described = {
         "field_id": field["id"],
         "type": field["type"],
         "question": _strip_html(field["question"]),
-        "reasoning": answer.get("reasoning", ""),
+        "reasoning": reasoning_override or answer.get("reasoning", ""),
     }
     if field["type"] in ("radio", "checkbox"):
         described["options"] = [_strip_html(option["value"]) for option in field["options"]]
@@ -215,33 +215,42 @@ def _describe_unresolved_field(field: dict, answer: dict) -> dict:
 CLICK_TIMEOUT_MS = 5000
 
 
-async def _apply_answer(page, field: dict, answer: dict) -> None:
+async def _apply_answer(page, field: dict, answer: dict) -> bool:
+    """Returns False if nothing could actually be clicked/filled.
+
+    A failure here is ambiguous by itself: it might mean the option became
+    moot (the form's branching logic hid it because it no longer applies —
+    fine, nothing lost) or it might mean a genuinely required answer silently
+    didn't register (not fine — the form will stay incomplete with no clue
+    why). We can't tell which from here, so the caller treats a False return
+    as "unresolved" only if the form is still incomplete once the whole loop
+    ends (see run_compliance_check_with_index) — if it turns out to have been
+    moot, the form completes anyway and the human is never bothered about it.
+    """
     if field["type"] in ("radio", "checkbox"):
         selected = {value.strip().lower() for value in answer.get("selected", [])}
+        applied = False
         for option in field["options"]:
             if _strip_html(option["value"]).strip().lower() in selected:
                 try:
                     await page.click(f"#{option['id']}", timeout=CLICK_TIMEOUT_MS)
+                    applied = True
                 except Exception:
-                    # An option that was visible when we scanned the page can stop
-                    # being clickable by the time we get here — e.g. an earlier
-                    # answer applied in this same pass toggled conditional logic
-                    # that hides this specific option (observed live 2026-09-26,
-                    # replaying human answers across several checkbox groups).
-                    # Skipping it is the same "don't crash on a branching quirk"
-                    # principle as the retrieval fallback in code_index.py — the
-                    # form's own logic decides what's still relevant, not us.
                     logger.warning(
                         "Could not click option %s for field %s (no longer visible?)",
                         option["id"], field["id"],
                     )
+        return applied
     else:
         text = answer.get("text", "")
         if text and field.get("inputId"):
             try:
                 await page.fill(f"#{field['inputId']}", text, timeout=CLICK_TIMEOUT_MS)
+                return True
             except Exception:
                 logger.warning("Could not fill field %s (no longer visible?)", field["id"])
+                return False
+        return True
 
 
 async def run_compliance_check(
@@ -278,6 +287,8 @@ async def run_compliance_check_with_index(
 
     processed: dict[str, dict] = {}
     unresolved: list[dict] = []
+    unresolved_ids: set[str] = set()
+    apply_failed: dict[str, tuple[dict, dict]] = {}
     run_start = time.monotonic()
 
     async with async_playwright() as playwright:
@@ -323,7 +334,10 @@ async def run_compliance_check_with_index(
                         field["type"] in ("radio", "checkbox") and not answer.get("selected")
                     ):
                         unresolved.append(_describe_unresolved_field(field, answer))
-                    await _apply_answer(page, field, answer)
+                        unresolved_ids.add(field["id"])
+                    applied = await _apply_answer(page, field, answer)
+                    if not applied:
+                        apply_failed[field["id"]] = (field, answer)
 
                 await page.wait_for_timeout(DOM_SETTLE_TIMEOUT_MS)
 
@@ -331,6 +345,24 @@ async def run_compliance_check_with_index(
             results_text = _extract_results_section(body_text)
             is_complete = "not yet completed" not in results_text.lower() and \
                 "incomplete" not in results_text.lower()
+
+            if not is_complete:
+                # A click/fill failure is ambiguous on its own (see _apply_answer's
+                # docstring) — but if the form is STILL incomplete once we're done,
+                # any answer that never actually registered is a real candidate for
+                # why, and the human deserves a lead rather than a dead end (observed
+                # live 2026-09-26: the loop found no new fields, returned
+                # needs_human_input: [], yet the checker still said "Incomplete" with
+                # nothing for the user to act on).
+                for field_id, (field, answer) in apply_failed.items():
+                    if field_id not in unresolved_ids:
+                        unresolved.append(_describe_unresolved_field(
+                            field, answer,
+                            reasoning_override="An answer was chosen but couldn't be "
+                            "applied to the form (the option may have stopped being "
+                            "available) — please answer this one directly.",
+                        ))
+                        unresolved_ids.add(field_id)
         finally:
             await browser.close()
 
