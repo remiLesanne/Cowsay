@@ -97,11 +97,23 @@ Docker: `cd backend && docker build -t cowsay-backend . && docker run --rm -p 80
 
 ## Deployment
 
-`.github/workflows/deploy.yml` builds `backend/` on every push to `main` and
-deploys it to AWS ECS (cluster `default`, service `cowsay-backend-dcab`).
-Needs `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` GitHub secrets, and
-`OPENROUTER_API_KEY` set on the ECS task definition for compliance-check to
-work in production.
+Target architecture (production-shaped, not a POC, per grading rubric):
+
+- **Compute:** AWS ECS on Fargate, cluster `default`, service
+  `cowsay-backend-dcab`, deployed as a Canary (~3 min bake time,
+  `wait-for-service-stability: true`).
+- **Images:** Docker, built from `backend/` and pushed to Amazon ECR, tagged
+  with the commit SHA.
+- **Database/auth (planned, not yet built):** external managed PostgreSQL
+  (Supabase or Neon) for users, reached via a `DATABASE_URL`-style env var.
+  No DB/auth code exists in `backend/` yet — see Status below.
+
+CI/CD: `.github/workflows/deploy.yml` runs on every push to `main` —
+checkout, AWS auth (`us-east-1`), Docker Buildx with GitHub Actions layer
+cache (`type=gha`), build+push to ECR, fetch the current ECS task definition,
+swap in the new image, deploy to Fargate. Needs `AWS_ACCESS_KEY_ID` /
+`AWS_SECRET_ACCESS_KEY` GitHub secrets, and `OPENROUTER_API_KEY` set on the
+ECS task definition for compliance-check to work in production.
 
 ## Git workflow for this repo
 
@@ -127,3 +139,5 @@ Not done yet (from the original brief):
   results display) — frontend currently only calls `GET /`.
 - No automated tests yet for either backend endpoint.
 - `OPENROUTER_API_KEY` is not wired into the ECS task definition / CI secrets.
+- No database or auth: no user model, DB client, or `DATABASE_URL` usage
+  anywhere in `backend/` yet, despite being part of the target architecture.
