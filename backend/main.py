@@ -1,5 +1,6 @@
 import io
 import subprocess
+import sys
 import zipfile
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -26,7 +27,12 @@ MAX_ZIP_FILE_SIZE = 500 * 1024 * 1024
 MAX_ARCHIVE_SIZE = 500 * 1024 * 1024
 MAX_ARCHIVE_FILES = 5000
 REPOMIX_TIMEOUT_SECONDS = 300
-REPOMIX_BIN = Path(__file__).parent / "node_modules" / ".bin" / "repomix"
+# On Windows, npm's extensionless ".bin/repomix" is a POSIX shell script that
+# Windows can't execute directly (WinError 193) — the ".cmd" shim is the real
+# entry point there. Linux/Docker (production) uses the extensionless script.
+REPOMIX_BIN = Path(__file__).parent / "node_modules" / ".bin" / (
+    "repomix.cmd" if sys.platform == "win32" else "repomix"
+)
 IGNORED_ARCHIVE_DIRECTORIES = {
     "node_modules",
     ".git",
