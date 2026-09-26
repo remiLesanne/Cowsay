@@ -21,7 +21,11 @@ RUN python -m playwright install --with-deps chromium
 
 # Pré-télécharge le modèle d'embeddings local (utilisé par code_index.py) pour
 # que le premier vrai compliance-check n'attende pas ce téléchargement.
-RUN python -c "from llama_index.embeddings.huggingface import HuggingFaceEmbedding; HuggingFaceEmbedding(model_name='sentence-transformers/all-MiniLM-L6-v2')"
+# cache_folder DOIT correspondre à EMBEDDING_CACHE_DIR dans code_index.py
+# (.embeddings_cache, relatif à ce dossier) sinon ce téléchargement va dans le
+# cache HF par défaut, un endroit différent de celui que le code lit au
+# démarrage — le pré-téléchargement serait alors inutile.
+RUN python -c "from llama_index.embeddings.huggingface import HuggingFaceEmbedding; HuggingFaceEmbedding(model_name='sentence-transformers/all-MiniLM-L6-v2', cache_folder='/app/.embeddings_cache')"
 
 # Copier tout le code source (dont ton main.py)
 COPY . .
