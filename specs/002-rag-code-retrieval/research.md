@@ -84,6 +84,15 @@ for this spec (`FR-002` only required "up to the upload limit" without a specifi
 500MB target time budget) — recorded here so the next person doesn't assume the numeric
 500MB target was validated end-to-end.
 
+**Update (2026-09-27, follow-up perf fix)**: option (b) above was partially taken —
+switched from sentence-transformers/PyTorch to fastembed's ONNX runtime for the same
+model (`all-MiniLM-L6-v2`), live-benchmarked at ~2.7x throughput on this machine
+(41.2s → 15.2s to index the same synthetic 1MB/1153-chunk project). This was prompted
+by a real production 504 (ALB idle timeout) caused by indexing alone taking 107.75s for
+a 1MB upload on an undersized ECS task — see README Deployment section. Options (a) and
+(c) above are still not done; a 500MB project is still synchronous and still slow, just
+proportionally less slow.
+
 ## Open questions resolved
 
 - **NEEDS CLARIFICATION: embedding provider** → resolved above (local HuggingFace model).

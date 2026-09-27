@@ -43,18 +43,22 @@ plugin — questions appear as earlier ones are answered, results computed by
 the site's own JS). **We drive the real page rather than reimplementing its
 logic**, so the recommendation is guaranteed identical to what a human would
 get. Each question is answered from the code chunks most relevant to it
-(`backend/code_index.py` — LlamaIndex + a local HuggingFace embedding model,
-no external embeddings API), not the whole project at once. Anything
-answered with low confidence goes into `needs_human_input` — with the real
-options the checker itself offers — instead of being silently guessed;
-`POST .../{session_id}/answer` resumes with human-provided answers (session
-cached server-side in `backend/session_store.py`, in-memory, 30min TTL,
-doesn't survive a restart or scale beyond one instance — documented
-trade-off), validated against the real options before any browser automation
-runs again. **Known limit**: `code_index.py`'s indexing throughput is
-~91 KB/s — fine up to tens of MB, but a true 500MB project would take on the
-order of 90 minutes to index synchronously (not solved — see
-`specs/002-rag-code-retrieval/research.md`).
+(`backend/code_index.py` — LlamaIndex + a local embedding model via
+**fastembed** (ONNX Runtime), no external embeddings API), not the whole
+project at once. Anything answered with low confidence goes into
+`needs_human_input` — with the real options the checker itself offers —
+instead of being silently guessed; `POST .../{session_id}/answer` resumes
+with human-provided answers (session cached server-side in
+`backend/session_store.py`, in-memory, 30min TTL, doesn't survive a restart
+or scale beyond one instance — documented trade-off), validated against the
+real options before any browser automation runs again. **Known limit**:
+indexing is still CPU-bound and synchronous within the request (root cause
+of a real production 504 — see Deployment below), though switched from
+sentence-transformers/PyTorch to fastembed's ONNX runtime for the same model,
+live-benchmarked at ~2.7x the throughput (28 → 76 chunks/s on a 1MB test
+project, same machine). Fine up to tens of MB; a true 500MB project would
+still take on the order of half an hour to index synchronously (not solved —
+see `specs/002-rag-code-retrieval/research.md`).
 
 **A two-stage variant was tried and reverted** (`specs/004-two-stage-analysis/`):
 summarize the whole project once, surface information gaps to the human
