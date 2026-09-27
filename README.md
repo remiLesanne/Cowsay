@@ -21,7 +21,20 @@ Next.js frontend (frontend/)  --HTTP-->  FastAPI backend (backend/)
              /api/v1/analyses                       (Repomix only: code -> AI-readable text)
              /api/v1/compliance-check                (Repomix + Playwright agent -> checker verdict, one call)
              /api/v1/compliance-check/{id}/answer    (resume with human answers for unresolved questions)
+             /api/v1/auth/*, /api/v1/history         (accounts + saved analyses, PostgreSQL — spec 005)
 ```
+
+**Accounts & history (spec 005)**: running/resuming a check requires a
+logged-in user (email + password, argon2, 24h JWT bearer — `backend/auth.py`).
+Every successful check is saved as one `analyses` row in PostgreSQL
+(`backend/db.py`, tables created at startup — no migrations yet), updated in
+place on each resume round: file name, content fingerprint (SHA-256 of the
+extracted files — **the code itself is never stored**), company, verdict,
+per-question detail (question/answer/reasoning/source AI or human), pending
+questions. Users only ever see/resume their own (others' → `404`).
+Trade-offs: logout is client-side (token discarded, still valid until
+expiry), token in `localStorage` (cross-origin front/back rules out cookies
+without HTTPS on the backend). See `specs/005-user-accounts-history/research.md`.
 
 `POST /api/v1/compliance-check` is the one-shot flow (specs 002/003): upload
 → Repomix → `backend/compliance_agent.py` drives a headless Chromium through
@@ -72,16 +85,27 @@ every request, a fresh TLS connection per LLM call).
 Upload a file/zip (`file`), optional `output_format` (`xml`|`markdown`).
 Returns the Repomix representation of the project. No compliance logic.
 
-### `POST /api/v1/compliance-check`
+### Auth — `POST /api/v1/auth/register`, `POST /api/v1/auth/login`, `GET /api/v1/auth/me`
+Register/login body `{"email", "password"}` (password ≥ 8 chars) → `{"access_token",
+"token_type": "bearer", "user"}`. `409` email taken (case-insensitive), same
+`401` for unknown email and wrong password. All routes marked 🔒 below need
+`Authorization: Bearer <token>` (`401` otherwise).
+
+### 🔒 `POST /api/v1/compliance-check`
 Upload a file/zip (`file`), optional `company_name`, `company_context` (free
-text, e.g. policy doc contents). Runs Repomix, then the compliance agent.
-Returns:
+text, e.g. policy doc contents). Runs Repomix, then the compliance agent,
+then saves the analysis. Returns:
 ```json
 {
   "session_id": "a1b2c3...",
+  "analysis_id": "uuid",
   "is_complete": true,
   "results_text": "<the checker's own recommendation, as plain text>",
   "questions_answered": 6,
+  "question_details": [
+    {"field_id": "...", "type": "radio", "question": "...", "answer": ["Provider"],
+     "reasoning": "...", "confidence": "high", "source": "ai"}
+  ],
   "needs_human_input": [
     {"field_id": "wsf-1-field-57-row-1", "type": "radio", "question": "...",
      "reasoning": "...", "options": ["Provider", "Deployer", "..."]}
@@ -89,7 +113,7 @@ Returns:
 }
 ```
 
-### `POST /api/v1/compliance-check/{session_id}/answer`
+### 🔒 `POST /api/v1/compliance-check/{session_id}/answer`
 Resume a check with human-provided answers, without re-uploading the file
 (reuses the code index cached from the first call). Body:
 ```json
@@ -98,8 +122,16 @@ Resume a check with human-provided answers, without re-uploading the file
 `value` is a string for `radio`/text-like fields, a string array for
 `checkbox`. Returns the same shape as the original endpoint. `400` if a
 multiple-choice value isn't one of that question's real options (before any
-browser automation runs); `404` if `session_id` is unknown or its 30-minute
-TTL expired.
+browser automation runs; a batch with one invalid value is rejected whole);
+`404` if `session_id` is unknown, its 30-minute TTL expired, or it belongs to
+another user. Free-text answers are applied too (they used to be silently
+dropped — fixed in spec 005). Updates the same saved analysis.
+
+### 🔒 `GET /api/v1/history`, `GET /api/v1/history/{analysis_id}`
+Current user's analyses, newest first; detail returns the saved result
+(same fields as above + `created_at`/`updated_at`/`content_fingerprint`),
+with `session_id` only while its in-memory session can still be resumed.
+`404` if not owned by the caller.
 
 ### `GET /health`
 Liveness check.
@@ -115,8 +147,15 @@ Allowed origins hardcoded in `main.py`: `localhost:3000`,
   OpenAI-compatible). Free tier — live-benchmarked as fast and stable (see
   above); get a key at [console.mistral.ai](https://console.mistral.ai).
 - `MISTRAL_MODEL` — optional, defaults to `mistral-small-latest`.
+- `DATABASE_URL` — required, e.g. `postgresql+psycopg://cowsay:pass@localhost:5432/cowsay`
+  (local PostgreSQL now, Supabase/Neon once deployed — same code).
+- `JWT_SECRET` — required, long random string
+  (`python -c "import secrets;print(secrets.token_urlsafe(48))"`).
 
 ## Run locally
+
+Needs a PostgreSQL database first (once):
+`sudo -u postgres createuser --pwprompt cowsay && sudo -u postgres createdb -O cowsay cowsay`.
 
 ```bash
 cd backend
@@ -152,9 +191,10 @@ Target architecture (production-shaped, not a POC, per grading rubric):
   `wait-for-service-stability: true`).
 - **Images:** Docker, built from `backend/` and pushed to Amazon ECR, tagged
   with the commit SHA.
-- **Database/auth (planned, not yet built):** external managed PostgreSQL
-  (Supabase or Neon) for users, reached via a `DATABASE_URL`-style env var.
-  No DB/auth code exists in `backend/` yet — see Status below.
+- **Database/auth:** built (spec 005) against local PostgreSQL; production
+  target is external managed PostgreSQL (Supabase or Neon) via `DATABASE_URL`
+  — not provisioned yet, and `DATABASE_URL`/`JWT_SECRET` must be added to the
+  ECS task definition before a deploy.
 
 CI/CD: `.github/workflows/deploy.yml` runs on every push to `main` —
 checkout, AWS auth (`us-east-1`), Docker Buildx with GitHub Actions layer
@@ -206,6 +246,9 @@ Done:
 - Fast, stable LLM provider (Mistral, `mistral-small-latest`) — a full
   one-shot check now completes in ~7-10s, live-verified after switching from
   Z.AI (which was 40-80s+ per single question, unusably slow).
+- Accounts + per-user history (spec 005): login required to analyze, every
+  check saved with per-question detail, "Mes analyses" page, `/analyse?id=`
+  reloads any saved result. Free-text human answers fixed.
 
 Not done yet (from the original brief):
 - Cross-checking the checker's recommendation against the actual AI Act
@@ -224,12 +267,14 @@ Not done yet (from the original brief):
   this project so far has been live manual/scripted testing against the real
   API, not a committed test suite.
 - `MISTRAL_API_KEY` is set directly on the ECS task definition (not in CI
-  secrets); the task definition is edited by hand, not managed as code.
+  secrets; edited by hand, not managed as code). `DATABASE_URL` and
+  `JWT_SECRET` (spec 005) are not wired in yet, and no managed PostgreSQL is
+  provisioned — accounts/history won't work in production until both are set.
+- Reusing a previous result for an identical project (the fingerprint is
+  stored for this, spec 005) — not built; a check always re-runs.
 - Session cache (`session_store.py`) is in-memory/single-process — lost on
   restart, doesn't scale beyond one instance (documented trade-off, not an
   oversight).
-- No database or auth: no user model, DB client, or `DATABASE_URL` usage
-  anywhere in `backend/` yet, despite being part of the target architecture.
 - True 500MB-project support: upload size limits (`MAX_FILE_SIZE` etc. in
   `main.py`) are already raised to 500MB, but `code_index.py`'s indexing
   would take ~90 minutes synchronously at current throughput for a project

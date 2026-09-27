@@ -2,16 +2,14 @@
 
 import { ChangeEvent, DragEvent, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
+import AppHeader from './components/AppHeader';
+import { useRequireAuth } from './components/useRequireAuth';
 import { runComplianceCheck } from './lib/api';
 
 const ACCEPTED_EXTENSIONS = ['.py', '.js', '.ts', '.tsx', '.jsx', '.java', '.go', '.rs', '.php', '.rb', '.c', '.cpp', '.cs', '.xml', '.md', '.zip'];
 const ACCEPTED_LABEL = 'Code, XML, Markdown ou ZIP';
 const MAX_CODE_FILE_SIZE = 10 * 1024 * 1024;
 const MAX_ZIP_FILE_SIZE = 500 * 1024 * 1024;
-
-function FileCodeIcon() {
-  return <svg aria-hidden="true" className="h-7 w-7" fill="none" viewBox="0 0 24 24"><path d="m8.5 8-4 4 4 4M15.5 8l4 4-4 4M13.5 5l-3 14" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.7" /></svg>;
-}
 
 function UploadIcon() {
   return <svg aria-hidden="true" className="h-8 w-8" fill="none" viewBox="0 0 24 24"><path d="M12 16V4m0 0L7.5 8.5M12 4l4.5 4.5M5 14v4.5A1.5 1.5 0 0 0 6.5 20h11a1.5 1.5 0 0 0 1.5-1.5V14" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.7" /></svg>;
@@ -23,6 +21,7 @@ function CheckIcon() {
 
 export default function Home() {
   const router = useRouter();
+  const user = useRequireAuth();
   const inputRef = useRef<HTMLInputElement>(null);
   const [file, setFile] = useState<File | null>(null);
   const [isDragging, setIsDragging] = useState(false);
@@ -73,26 +72,18 @@ export default function Home() {
     setMessage('');
     try {
       const result = await runComplianceCheck(file);
-      sessionStorage.setItem('ai-risk-check-result', JSON.stringify({
-        name: file.name,
-        size: file.size,
-        result,
-      }));
-      router.push('/analyse');
+      router.push(`/analyse?id=${encodeURIComponent(result.analysis_id)}`);
     } catch (error) {
       setMessage(error instanceof Error ? error.message : 'Impossible d’analyser ce fichier.');
       setIsAnalysing(false);
     }
   };
 
+  if (!user) return <main className="min-h-screen bg-[#f8fafc]" />;
+
   return (
     <main className="min-h-screen bg-[#f8fafc] text-slate-900">
-      <header className="border-b border-slate-200/80 bg-white">
-        <div className="mx-auto flex h-[72px] w-full max-w-6xl items-center justify-between px-6 lg:px-10">
-          <div className="flex items-center gap-3"><div className="flex h-9 w-9 items-center justify-center rounded-lg bg-[#173f5f] text-white"><FileCodeIcon /></div><span className="text-[17px] font-semibold tracking-[-0.02em] text-slate-800">AI Risk Check</span></div>
-          <div className="hidden items-center gap-2 text-sm text-slate-500 sm:flex"><span className="h-2 w-2 rounded-full bg-emerald-500" />Conforme à l’AI Act</div>
-        </div>
-      </header>
+      <AppHeader user={user} />
 
       <section className="mx-auto max-w-3xl px-6 pb-20 pt-16 text-center lg:pt-24">
         <p className="mb-4 text-xs font-semibold uppercase tracking-[0.2em] text-[#277da1]">Analyse de conformité</p>
