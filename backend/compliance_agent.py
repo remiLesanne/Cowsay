@@ -203,6 +203,14 @@ GET_VISIBLE_FIELDS_JS = """
             node = node.previousElementSibling;
             steps++;
         }
+        // Some radio/checkbox groups carry their question in their own fieldset
+        // <legend> instead of (or on top of) a heading block before them — e.g.
+        // "Does your AI system pose a significant risk of harm...?" (field 173,
+        // live-observed 2026-09-27: without this it reached the LLM and the human
+        // as an empty question with just Yes/No).
+        const legend = el.querySelector('legend');
+        const legendText = legend ? legend.innerText.trim() : '';
+        if (legendText && !parts.some(part => part.includes(legendText))) parts.push(legendText);
         return parts.join('\\n');
     }
 
