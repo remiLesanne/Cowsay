@@ -32,7 +32,7 @@ LLM_RETRYABLE_STATUS = {429, 500, 502, 503, 504}
 # Only errors that fail fast are retried: retrying a 120s read timeout would hold
 # a queue slot for minutes on a provider that is clearly struggling.
 LLM_RETRYABLE_ERRORS = (httpx.ConnectError, httpx.ConnectTimeout, httpx.RemoteProtocolError)
-# Mistral free tier, measured 2026-09-27 (specs/007 research.md R1); replaced by the
+# Mistral free tier, measured 2026-09-27 (specs/008 research.md R1); replaced by the
 # limits the API reports in its response headers as soon as the first call returns.
 LLM_DEFAULT_REQUESTS_PER_MINUTE = 100
 LLM_DEFAULT_TOKENS_PER_MINUTE = 100_000
@@ -57,7 +57,7 @@ def _get_http_client() -> httpx.AsyncClient:
 class LlmPacer:
     """Keeps every LLM call of the process under the provider's per-minute quotas.
 
-    Several checks run at once (specs/007) and they all share one API key; without
+    Several checks run at once (specs/008) and they all share one API key; without
     pacing they would overshoot the quota together and all get 429s at the same time.
     Calls instead wait, first come first served, until the last 60 s of calls leaves
     room for one more request and its tokens. A call's tokens are estimated from the
@@ -131,7 +131,7 @@ class LlmPacer:
 _pacer = LlmPacer()
 
 
-# One Chromium for the whole process, a fresh isolated context per check (specs/007
+# One Chromium for the whole process, a fresh isolated context per check (specs/008
 # research.md R7): launching a browser per check doubled the memory and startup cost
 # of every concurrent check, while a context already has its own cookies/storage, so
 # one user's answers can't leak into another's form.
@@ -331,7 +331,10 @@ async def _ask_llm_for_answer(field: dict, retrieved_code_text: str, extra_conte
         return normalize_llm_answer(field, {"reasoning": "Réponse du modèle illisible"})
 
 
-async def _post_to_llm(api_key: str, prompt: str) -> httpx.Response:
+async def _post_to_llm(api_key: str, prompt: str, **body_overrides) -> httpx.Response:
+    """The one way to call the LLM in this process: paced under the provider's quota
+    and retried on transient errors. `body_overrides` adds/replaces request fields
+    (e.g. ai_act.py's `response_format` and its own `temperature`)."""
     client = _get_http_client()
     # ~3 characters per token on code (measured ~4.5; over-estimating only delays a
     # call until the real usage is known, under-estimating could overshoot the quota).
@@ -348,6 +351,7 @@ async def _post_to_llm(api_key: str, prompt: str) -> httpx.Response:
                     # Compliance answers should be reproducible: same material, same
                     # question -> same answer (also what makes reusing them safe).
                     "temperature": 0,
+                    **body_overrides,
                 },
             )
         except LLM_RETRYABLE_ERRORS:

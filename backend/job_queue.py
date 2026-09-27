@@ -13,7 +13,7 @@ from fastapi import HTTPException
 
 logger = logging.getLogger(__name__)
 
-# specs/007 research.md R9. Each running check holds a browser context and an index
+# specs/008 research.md R9. Each running check holds a browser context and an index
 # in memory and competes for 2 vCPU; the LLM quota (not these workers) is the real
 # platform-wide ceiling, so more workers would mostly just wait on the pacer.
 MAX_CONCURRENT_CHECKS = int(os.environ.get("MAX_CONCURRENT_CHECKS", "4"))

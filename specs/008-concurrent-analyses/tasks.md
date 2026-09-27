@@ -1,6 +1,6 @@
 # Tasks: Concurrent Analyses (10+ simultaneous users)
 
-**Input**: Design documents from `specs/007-concurrent-analyses/`
+**Input**: Design documents from `specs/008-concurrent-analyses/`
 
 **Prerequisites**: plan.md, spec.md, research.md, data-model.md, contracts/api.md, quickstart.md
 

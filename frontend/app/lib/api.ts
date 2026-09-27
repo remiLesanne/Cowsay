@@ -140,7 +140,7 @@ export async function getMe(): Promise<User> {
 
 // `file` and `pdf` are each optional, but at least one is required (specs/006 FR-002) —
 // the backend rejects a request with neither before doing any processing.
-// Returns as soon as the analysis is queued (specs/007); follow it with getAnalysis.
+// Returns as soon as the analysis is queued (specs/008); follow it with getAnalysis.
 export async function runComplianceCheck(
   file: File | null,
   pdf?: File | null,
@@ -168,7 +168,7 @@ export async function runComplianceCheck(
 
 export type HumanAnswer = { field_id: string; value: string | string[] };
 
-// Queued like a new analysis (specs/007): the updated result arrives via getAnalysis.
+// Queued like a new analysis (specs/008): the updated result arrives via getAnalysis.
 export async function resumeComplianceCheck(sessionId: string, answers: HumanAnswer[]): Promise<SubmittedAnalysis> {
   const response = await authFetch(`/api/v1/compliance-check/${sessionId}/answer`, {
     method: 'POST',
@@ -273,5 +273,39 @@ export async function getAnalysis(analysisId: string): Promise<AnalysisResult> {
 export async function listAnalyses(): Promise<AnalysisSummary[]> {
   const response = await authFetch('/api/v1/history');
   if (!response.ok) throw new Error('Impossible de charger vos analyses.');
+  return response.json();
+}
+
+// specs/007 — explanations of the AI Act articles the checker's verdict cites.
+export type ArticlePassage = { label: string; text: string };
+
+export type ExplainedArticle = {
+  ref: string;
+  kind: 'article' | 'annex';
+  number: string;
+  title: string;
+  url: string;
+  // false when the verdict cites something absent from the stored AI Act text.
+  available: boolean;
+  passages: ArticlePassage[];
+  explanation: string;
+  why_it_applies: string;
+  what_it_implies: string;
+};
+
+export type SeeAlsoRef = { ref: string; title: string; articles: string[]; url: string };
+
+export type ArticleExplanationSet = {
+  status: 'ready' | 'incomplete' | 'no_references';
+  articles: ExplainedArticle[];
+  see_also: SeeAlsoRef[];
+};
+
+export async function getArticleExplanations(analysisId: string): Promise<ArticleExplanationSet> {
+  const response = await authFetch(`/api/v1/history/${encodeURIComponent(analysisId)}/articles`);
+  if (!response.ok) {
+    const error = await response.json().catch(() => null);
+    throw new Error(detailToMessage(error?.detail, 'Impossible d’expliquer les articles pour le moment.'));
+  }
   return response.json();
 }

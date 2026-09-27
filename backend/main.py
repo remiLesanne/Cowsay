@@ -73,10 +73,10 @@ MAX_ZIP_FILE_SIZE = 500 * 1024 * 1024
 MAX_ARCHIVE_SIZE = 500 * 1024 * 1024
 MAX_ARCHIVE_FILES = 5000
 REPOMIX_TIMEOUT_SECONDS = 300
-# Where uploads wait for their turn in the queue (specs/007 FR-018: temporary only).
+# Where uploads wait for their turn in the queue (specs/008 FR-018: temporary only).
 HELD_UPLOAD_DIR = Path(tempfile.gettempdir()) / "cowsay-uploads"
 # Guards only the Repomix-only /api/v1/analyses endpoint, which is still one
-# synchronous request; compliance checks go through job_queue instead (specs/007).
+# synchronous request; compliance checks go through job_queue instead (specs/008).
 MAX_CONCURRENT_REPOMIX_ONLY = 2
 _repomix_only_slots = asyncio.Semaphore(MAX_CONCURRENT_REPOMIX_ONLY)
 # On Windows, npm's extensionless ".bin/repomix" is a POSIX shell script that
@@ -213,7 +213,7 @@ def _checked_archive_entries(archive: zipfile.ZipFile) -> Iterator[tuple[zipfile
     """Yields the archive's files to extract, enforcing every archive limit on the way.
 
     Works from the central directory only, so the same checks can run at submission
-    time (nothing extracted — specs/007 FR-002) and again while extracting.
+    time (nothing extracted — specs/008 FR-002) and again while extracting.
     """
     kept_files = 0
     uncompressed_size = 0
@@ -443,7 +443,7 @@ def _index_unresolved(unresolved: list[dict]) -> dict[str, dict]:
 @dataclass
 class HeldUpload:
     """A code upload waiting in the queue: a private temp file, deleted by the queue
-    once its job ends (specs/007 FR-018 — never stored durably)."""
+    once its job ends (specs/008 FR-018 — never stored durably)."""
 
     path: Path
     filename: str
@@ -561,7 +561,7 @@ async def create_compliance_check(
 ):
     """Queue the uploaded project for the official EU AI Act Compliance Checker.
 
-    Validates the input, then returns 202 at once (specs/007): the check itself —
+    Validates the input, then returns 202 at once (specs/008): the check itself —
     Repomix on the code, text extracted from an optional PDF (specs/006), an LLM
     answering each question of
     https://artificialintelligenceact.eu/assessment/eu-ai-act-compliance-checker/embedded/
@@ -644,7 +644,7 @@ async def answer_compliance_check(
     Reuses the ProjectIndex built on the first run (no Repomix re-run, no
     re-embedding — see specs/003-human-in-loop-answers/research.md), skips the LLM
     for fields the human has now answered and for those the AI already answered
-    (specs/007). Multiple-choice answers are validated against the question's real
+    (specs/008). Multiple-choice answers are validated against the question's real
     options before anything is queued, so a bad value fails fast.
     """
     session = session_store.get_session(session_id)

@@ -61,7 +61,7 @@ class Analysis(Base):
     user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
     filename: Mapped[str] = mapped_column(Text)
     # SHA-256 of the extracted project files — never the code itself (spec FR-009).
-    # Empty until the first run has extracted the files (specs/007: the row now
+    # Empty until the first run has extracted the files (specs/008: the row now
     # exists from submission time).
     content_fingerprint: Mapped[str] = mapped_column(String(64), index=True, default="")
     company_name: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -72,7 +72,7 @@ class Analysis(Base):
     # specs/006: why part of a submitted PDF was ignored, so a reopened analysis
     # still tells the user its answers didn't use those pages.
     pdf_warning: Mapped[str | None] = mapped_column(Text, nullable=True)
-    # specs/007: queued -> running -> done | failed; a resume moves it back to queued.
+    # specs/008: queued -> running -> done | failed; a resume moves it back to queued.
     # Rows created before this column existed are finished analyses, hence 'done'.
     status: Mapped[str] = mapped_column(String(16), default=STATUS_DONE, server_default=STATUS_DONE)
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -80,6 +80,24 @@ class Analysis(Base):
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
+class ArticleExplanation(Base):
+    # A separate table rather than a column on `analyses`: create_all creates missing
+    # tables but never alters existing ones, and `analyses` already exists in
+    # production (specs/007-ai-act-article-explanations/research.md).
+    __tablename__ = "article_explanations"
+
+    analysis_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("analyses.id", ondelete="CASCADE"), primary_key=True
+    )
+    # SHA-256 of the verdict the explanations were produced for: a resume round that
+    # changes the verdict makes them stale (spec 007 FR-007).
+    results_hash: Mapped[str] = mapped_column(String(64))
+    content: Mapped[dict] = mapped_column(JSONB)
+    created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )
 
@@ -102,7 +120,7 @@ def init_db() -> None:
 
 
 def recover_interrupted_analyses() -> int:
-    """Fails every analysis a previous process left queued or running (specs/007 FR-015).
+    """Fails every analysis a previous process left queued or running (specs/008 FR-015).
 
     The queue lives in memory and the uploaded material is never kept (spec 005), so
     these can't be continued — without this they would spin as "en cours" forever.

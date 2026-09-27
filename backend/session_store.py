@@ -26,10 +26,10 @@ class ComplianceSession:
     unresolved_by_field_id: dict[str, dict] = field(default_factory=dict)
     human_answers: dict[str, str | list[str]] = field(default_factory=dict)
     # The AI's answers already given in this analysis, by field id — reused on resume
-    # instead of asking the LLM the same question again (specs/007 FR-010).
+    # instead of asking the LLM the same question again (specs/008 FR-010).
     ai_answers: dict[str, dict] = field(default_factory=dict)
     # True while a resume for it waits in the queue or runs: the 30-minute window
-    # must not run out on a user who is only waiting their turn (specs/007 FR-009).
+    # must not run out on a user who is only waiting their turn (specs/008 FR-009).
     busy: bool = False
     expires_at: float = 0.0
 

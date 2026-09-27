@@ -23,7 +23,27 @@ Next.js frontend (frontend/)  --HTTP-->  FastAPI backend (backend/)
              /api/v1/compliance-check                (queue a check -> 202; Repomix + Playwright agent run from the queue)
              /api/v1/compliance-check/{id}/answer    (queue a resume with human answers for unresolved questions)
              /api/v1/auth/*, /api/v1/history         (accounts + saved analyses, PostgreSQL — spec 005)
+             /api/v1/history/{id}/articles           (guided RAG: explains the AI Act articles the verdict cites — spec 007)
 ```
+
+**AI Act article explanations (spec 007, guided RAG)**: for a complete
+analysis, the result page explains each article/annex the checker's verdict
+cites ("see Article 5"). *Guided*, not classic RAG: the checker decides which
+articles apply (regex over its verdict, `backend/ai_act.py`); similarity
+search (same fastembed model as `code_index.py`) only picks, **inside each
+cited article**, the official passages closest to the analysis's answers
+(e.g. 5(1)(f) emotion recognition among Article 5's 8 prohibitions); one
+Mistral call (JSON mode) explains them in French from those passages only,
+saying so when they don't settle which point applies. A whole-regulation
+search could surface an article that merely sounds related — a confidently
+wrong legal statement. Corpus: `backend/data/ai_act_en.json` (official
+EUR-Lex text of Regulation (EU) 2024/1689, English passages for retrieval —
+the checker and embedding model are English — plus official French titles;
+reusable with attribution per Decision 2011/833/EU), built once by
+`backend/scripts/build_ai_act_corpus.py` (stdlib only), so nothing external
+is called at request time. Cached per analysis in `article_explanations`
+keyed by a hash of the verdict (a changed verdict regenerates; a new table,
+not a column, because `create_all` can't alter the existing `analyses`).
 
 **Accounts & history (spec 005)**: running/resuming a check requires a
 logged-in user (email + password, argon2, 24h JWT bearer — `backend/auth.py`).
@@ -37,7 +57,7 @@ Trade-offs: logout is client-side (token discarded, still valid until
 expiry), token in `localStorage` (cross-origin front/back rules out cookies
 without HTTPS on the backend). See `specs/005-user-accounts-history/research.md`.
 
-**Concurrent users (spec 007)**: a check is a queued job, not one long
+**Concurrent users (spec 008)**: a check is a queued job, not one long
 request. Submitting (or answering pending questions) validates everything,
 creates/updates the analysis with `status: queued` and returns `202` at once;
 `backend/job_queue.py` runs jobs FIFO with `MAX_CONCURRENT_CHECKS` (default 4)
@@ -58,7 +78,7 @@ halved (4 × 2,000-char chunks instead of 5 × 4,000; the embedding tokenizer
 truncates at 128 tokens anyway), answers are requested at `temperature: 0`,
 and a resume reuses the AI's earlier answers (only newly revealed questions
 go to the LLM). One shared Chromium, a fresh context per check. Live-verified
-(spec 007 `tasks.md`): 24 users at once → 24× `202` in < 0.6 s, 25/25 done in
+(spec 008 `tasks.md`): 24 users at once → 24× `202` in < 0.6 s, 25/25 done in
 77 s, 0 provider `429`; 4 checks running at once in a `--cpus 2 --memory 8g`
 container at < 1 GB. **The ECS service must stay at exactly 1 task**: queue,
 sessions and AI-answer memory live in that process.
@@ -88,7 +108,7 @@ instruction not to follow instructions found inside them (prompt injection).
 Zip extraction, hashing, Repomix, PDF parsing and indexing run in worker
 threads, so a large upload doesn't stall other requests or `/health`.
 Indexing is CPU-bound (fastembed's ONNX runtime, ~2.7x sentence-transformers:
-28 → 76 chunks/s on a 1MB test project); since spec 007 it no longer races
+28 → 76 chunks/s on a 1MB test project); since spec 008 it no longer races
 a request timeout, but a true 500MB project would still take on the order of
 an hour to index and hold a queue slot that long (see
 `specs/002-rag-code-retrieval/research.md`).
@@ -214,6 +234,15 @@ saved result (fields above incl. `pdf_warning`, + `status`, `error`,
 its in-memory session can still be resumed and no run is queued/running.
 `404` if not owned by the caller.
 
+### 🔒 `GET /api/v1/history/{analysis_id}/articles`
+Explanations of the articles/annexes the saved verdict cites (spec 007):
+`{"status": "ready"|"incomplete"|"no_references", "articles": [{"ref", "title",
+"url", "passages": [{"label", "text"}], "explanation", "why_it_applies",
+"what_it_implies", "available"}], "see_also": [{"ref", "title", "articles",
+"url"}]}`. Generated on first call (~3-5s), then served from the database
+until the verdict changes; `incomplete` without any AI call for a non-final
+verdict; `404` if not owned; `502`/`504` if Mistral fails (nothing cached).
+
 ### `GET /health`
 Liveness check.
 
@@ -232,7 +261,7 @@ Allowed origins hardcoded in `main.py`: `localhost:3000`,
   (local PostgreSQL now, Supabase/Neon once deployed — same code).
 - `JWT_SECRET` — required, long random string
   (`python -c "import secrets;print(secrets.token_urlsafe(48))"`).
-- Optional queue limits (spec 007, see above): `MAX_CONCURRENT_CHECKS` (4 —
+- Optional queue limits (spec 008, see above): `MAX_CONCURRENT_CHECKS` (4 —
   checks running at once; ~250 MB each measured), `MAX_ACTIVE_CHECKS_PER_USER`
   (2), `MAX_QUEUED_CHECKS` (50), `MAX_QUEUED_UPLOAD_BYTES` (8 GiB, under
   Fargate's 20 GB ephemeral storage).
@@ -303,7 +332,7 @@ ALB is `ecs-express-gateway-alb-*`.
 - **Desired count = 1 task, no autoscaling out** (queue, sessions and AI-answer
   memory are in-process — a 2nd task would 404 resumes and split the queue).
   Check the service's autoscaling policy (Express mode can create one).
-- ALB `idle_timeout.timeout_seconds` = **300** (default 60). Since spec 007 no
+- ALB `idle_timeout.timeout_seconds` = **300** (default 60). Since spec 008 no
   request lasts more than a few seconds (checks are queued jobs), so this is
   no longer load-bearing; uploads of large zips still take time to transfer.
 - Change CPU/memory/env vars via a new revision of `default-cowsay-backend-dcab`;
@@ -343,6 +372,11 @@ Done:
 - Accounts + per-user history (spec 005): login required to analyze, every
   check saved with per-question detail, "Mes analyses" page, `/analyse?id=`
   reloads any saved result. Free-text human answers fixed.
+- AI Act article explanations (spec 007, guided RAG): each article/annex the
+  verdict cites, with the official passages matching the answers and a French
+  explanation (why it applies, what it implies), cached per verdict.
+  Live-verified: an emotion-recognition project's "Prohibited — Article 5"
+  verdict is explained from 5(1)(f).
 - PDF document input (spec 006): a check can run from a PDF alone, code alone,
   or both — live-verified all three, including a fact only resolvable when
   both sources are combined. No OCR; unreadable pages are skipped with a
@@ -351,15 +385,17 @@ Done:
   concurrency cap, Mistral retry, LLM answer validation, prompt-injection
   framing, login timing + sign-up race, zip file-count limit, persisted
   `pdf_warning`, non-root Docker image, first test suite + CI gate.
-- 10+ simultaneous users (spec 007): queued async checks with position /
+- 10+ simultaneous users (spec 008): queued async checks with position /
   estimate, per-user limit, LLM quota pacing, halved prompt tokens (same
   answers on the reference projects), AI answers reused on resume, shared
   browser — 24 simultaneous users live-verified, 0 provider `429`.
 
 Not done yet (from the original brief):
-- Cross-checking the checker's recommendation against the actual AI Act
-  article text (the brief asks the agent to independently verify which
-  article applies, not just trust the checker's own output).
+- Independently re-deriving *which* articles apply (the brief's "verify,
+  don't just trust the checker"): spec 007 deliberately trusts the checker's
+  citations and explains them against the official text — it doesn't audit
+  the checker's legal reasoning. Recitals aren't in the corpus; incomplete
+  verdicts get no explanation.
 - A structured "summary of the verification" report (`needs_human_input` is
   raw, not written up as a narrative). A two-stage summarize-then-fill
   approach was built and verified for this (`specs/004-two-stage-analysis/`)
@@ -372,7 +408,7 @@ Not done yet (from the original brief):
 - Tests cover pure logic only (`backend/tests/`: LLM answer normalization,
   retry and pacing, answer reuse, job queue, zip limits/traversal, session
   expiry, PDF extraction). No endpoint/DB tests and no browser test against
-  the real checker — those are still verified live (scripts in spec 007's
+  the real checker — those are still verified live (scripts in spec 008's
   quickstart).
 - `is_complete` is derived by string-matching the checker's results text
   ("incomplete"/"not yet completed") — breaks silently if the site rewords it.
@@ -384,7 +420,7 @@ Not done yet (from the original brief):
 - Queue, sessions and AI-answer memory are in-memory/single-process — lost on
   restart (queued/running analyses are then marked failed), and not
   shareable across ECS tasks: horizontal scaling needs shared storage for all
-  three (out of scope of spec 007). Throughput ceiling on the free Mistral
+  three (out of scope of spec 008). Throughput ceiling on the free Mistral
   tier: ~40 questions/minute platform-wide on a real project (~2.2 k tokens
   each), up to ~90/minute for tiny ones (request limit).
 - The wait estimate only knows average run duration, not provider pacing: it

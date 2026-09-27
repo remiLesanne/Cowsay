@@ -2,7 +2,7 @@
 
 **Branch**: `feature/concurrent-analyses` | **Date**: 2026-09-27 | **Spec**: [spec.md](spec.md)
 
-**Input**: Feature specification from `specs/007-concurrent-analyses/spec.md`
+**Input**: Feature specification from `specs/008-concurrent-analyses/spec.md`
 
 ## Summary
 
@@ -73,7 +73,7 @@ Post-design re-check (after research/data-model/contracts): unchanged, PASS. No 
 ### Documentation (this feature)
 
 ```text
-specs/007-concurrent-analyses/
+specs/008-concurrent-analyses/
 ├── spec.md
 ├── plan.md              # This file
 ├── research.md          # Phase 0: measurements + decisions R1–R9

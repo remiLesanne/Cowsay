@@ -18,7 +18,7 @@ export default function CompliancePage() {
     setIsRunning(true);
     setError('');
     try {
-      // Queued (specs/007): the analysis page follows it to the result.
+      // Queued (specs/008): the analysis page follows it to the result.
       const submitted = await runComplianceCheck(file, null, companyName || undefined, companyContext || undefined);
       router.push(`/analyse?id=${encodeURIComponent(submitted.analysis_id)}`);
     } catch (submitError) {

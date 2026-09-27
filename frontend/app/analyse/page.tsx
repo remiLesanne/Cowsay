@@ -4,10 +4,11 @@ import Link from 'next/link';
 import { Suspense, useEffect, useState } from 'react';
 import { useSearchParams } from 'next/navigation';
 import AppHeader from '../components/AppHeader';
+import ArticleExplanations from '../components/ArticleExplanations';
 import { useRequireAuth } from '../components/useRequireAuth';
 import { getAnalysis, isActiveStatus, resumeComplianceCheck, type AnalysisResult, type QuestionDetail } from '../lib/api';
 
-// How often a queued/running analysis is re-read (specs/007 SC-003: ≤ 10 s).
+// How often a queued/running analysis is re-read (specs/008 SC-003: ≤ 10 s).
 const POLL_INTERVAL_MS = 3000;
 
 function ArrowLeftIcon() {
@@ -87,7 +88,7 @@ function AnalyseContent() {
   const [followKey, setFollowKey] = useState(0);
 
   // Loads the analysis, then keeps re-reading it while it is queued or running
-  // (specs/007): the check no longer happens inside the submit request.
+  // (specs/008): the check no longer happens inside the submit request.
   useEffect(() => {
     if (!analysisId) return;
     let cancelled = false;
@@ -222,6 +223,12 @@ function AnalyseContent() {
               <p className="mt-2 text-sm text-slate-500">{result.questions_answered} question(s) répondue(s)</p>
               <pre className="mt-4 whitespace-pre-wrap font-sans text-sm leading-6 text-slate-800">{result.results_text}</pre>
             </div>
+          )}
+
+          {/* Only for a settled verdict: while a resume is queued/running, the verdict
+              shown is about to be replaced (specs/008 × specs/007 explanations). */}
+          {!isActiveStatus(result.status) && result.results_text && (
+            <ArticleExplanations analysisId={result.analysis_id} isComplete={result.is_complete} resultsText={result.results_text} />
           )}
 
           {result.needs_human_input.length > 0 && result.session_id && !isActiveStatus(result.status) && (

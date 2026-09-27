@@ -8,7 +8,7 @@ from pathlib import Path
 logger = logging.getLogger(__name__)
 
 EMBEDDING_MODEL_NAME = "sentence-transformers/all-MiniLM-L6-v2"
-# Sized for the LLM token budget, the platform-wide bottleneck (specs/007 research.md
+# Sized for the LLM token budget, the platform-wide bottleneck (specs/008 research.md
 # R5): at most 4 x 2,000 chars per question instead of 5 x 4,000. The embedding
 # model's tokenizer truncates at 128 tokens anyway (~400 chars of code), so a chunk
 # is retrieved on its opening lines; shorter chunks are represented better by that
@@ -47,7 +47,7 @@ from llama_index.embeddings.fastembed import FastEmbedEmbedding
 _FILE_HEADER_RE = re.compile(r"^## File: (.+)$", re.MULTILINE)
 
 _embed_model: FastEmbedEmbedding | None = None
-# Several checks index in parallel worker threads (specs/007): without the lock the
+# Several checks index in parallel worker threads (specs/008): without the lock the
 # first two could each load their own copy of the model.
 _embed_model_lock = threading.Lock()
 
