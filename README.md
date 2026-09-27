@@ -53,7 +53,17 @@ instead of being silently guessed; `POST .../{session_id}/answer` resumes
 with human-provided answers (session cached server-side in
 `backend/session_store.py`, in-memory, 30min TTL, doesn't survive a restart
 or scale beyond one instance — documented trade-off), validated against the
-real options before any browser automation runs again. **Known limit**:
+real options before any browser automation runs again. The LLM's own answers
+are normalized the same way (`normalize_llm_answer`): options not in the form
+are dropped, several answers to a radio question go to the human, transient
+Mistral errors (429/5xx, connection drops) are retried with backoff. Code and
+PDF excerpts are passed to the LLM as delimited *data*, with an explicit
+instruction not to follow instructions found inside them (prompt injection).
+At most `MAX_CONCURRENT_CHECKS` (default 2) checks/resumes run at once per
+process — each holds a Chromium + an index in memory; extra requests get an
+immediate `503` rather than queueing into the ALB timeout. Zip extraction,
+hashing, Repomix, PDF parsing and indexing run in worker threads, so a large
+upload doesn't stall other requests or `/health`. **Known limit**:
 indexing is still CPU-bound and synchronous within the request (root cause
 of a real production 504 — see Deployment below), though switched from
 sentence-transformers/PyTorch to fastembed's ONNX runtime for the same model,
@@ -102,9 +112,10 @@ every request, a fresh TLS connection per LLM call).
 
 ## API
 
-### `POST /api/v1/analyses`
+### 🔒 `POST /api/v1/analyses`
 Upload a file/zip (`file`), optional `output_format` (`xml`|`markdown`).
 Returns the Repomix representation of the project. No compliance logic.
+Unused by the UI; requires login since it accepts the same 500 MB uploads.
 
 ### Auth — `POST /api/v1/auth/register`, `POST /api/v1/auth/login`, `GET /api/v1/auth/me`
 Register/login body `{"email", "password"}` (password ≥ 8 chars) → `{"access_token",
@@ -138,7 +149,11 @@ analysis. Returns:
 ```
 `400` if neither `file` nor `pdf` is provided, or if `pdf` isn't a valid PDF.
 `pdf_warning` is present only when a meaningful share of a submitted PDF's
-pages had no extractable text (scanned/image-only — not OCR'd, spec 006).
+pages had no extractable text (scanned/image-only — not OCR'd, spec 006); it
+is saved with the analysis and returned again on resume and in history.
+`503` if `MAX_CONCURRENT_CHECKS` checks are already running (retry later).
+`409` on register is also returned for two simultaneous sign-ups with the
+same email (no `500`); login costs the same argon2 time for an unknown email.
 
 ### 🔒 `POST /api/v1/compliance-check/{session_id}/answer`
 Resume a check with human-provided answers, without re-uploading the file
@@ -156,7 +171,7 @@ dropped — fixed in spec 005). Updates the same saved analysis.
 
 ### 🔒 `GET /api/v1/history`, `GET /api/v1/history/{analysis_id}`
 Current user's analyses, newest first; detail returns the saved result
-(same fields as above + `created_at`/`updated_at`/`content_fingerprint`),
+(same fields as above incl. `pdf_warning`, + `created_at`/`updated_at`/`content_fingerprint`),
 with `session_id` only while its in-memory session can still be resumed.
 `404` if not owned by the caller.
 
@@ -169,8 +184,8 @@ Allowed origins hardcoded in `main.py`: `localhost:3000`,
 
 ## Required env vars (backend)
 
-- `MISTRAL_API_KEY` — required for every LLM call (project summary + form
-  answers), Mistral's La Plateforme API (`api.mistral.ai/v1/chat/completions`,
+- `MISTRAL_API_KEY` — required for every LLM call (one per form question
+  the AI answers), Mistral's La Plateforme API (`api.mistral.ai/v1/chat/completions`,
   OpenAI-compatible). Free tier — live-benchmarked as fast and stable (see
   above); get a key at [console.mistral.ai](https://console.mistral.ai).
 - `MISTRAL_MODEL` — optional, defaults to `mistral-small-latest`.
@@ -178,6 +193,8 @@ Allowed origins hardcoded in `main.py`: `localhost:3000`,
   (local PostgreSQL now, Supabase/Neon once deployed — same code).
 - `JWT_SECRET` — required, long random string
   (`python -c "import secrets;print(secrets.token_urlsafe(48))"`).
+- `MAX_CONCURRENT_CHECKS` — optional, default `2` (see above); size it to the
+  task's memory.
 
 ## Run locally
 
@@ -206,29 +223,35 @@ cp .env.exemple .env.local   # set NEXT_PUBLIC_API_URL=http://localhost:8000
 npm ci && npm run dev
 ```
 
-Docker: `cd backend && docker build -t cowsay-backend . && docker run --rm -p 8000:8000 cowsay-backend`
-(pass `-e MISTRAL_API_KEY=...`).
+Docker: `cd backend && docker build -t cowsay-backend . && docker run --rm -p 8000:8000 --env-file .env -e DATABASE_URL=... -e JWT_SECRET=... cowsay-backend`
+(from inside the container, a local database is `host.docker.internal`, not `localhost`).
+The image runs as non-root user `app`; Chromium lives in `/ms-playwright`.
+
+Tests (no database, network or model needed — LLM calls are mocked):
+`cd backend && pip install -r requirements-dev.txt && python -m pytest tests`.
 
 ## Deployment
 
 Target architecture (production-shaped, not a POC, per grading rubric):
 
-- **Compute:** AWS ECS on Fargate, cluster `default`, service
-  `cowsay-backend-dcab`, deployed as a Canary (~3 min bake time,
-  `wait-for-service-stability: true`).
+- **Compute:** AWS ECS on Fargate (Express mode), cluster `default`, service
+  `cowsay-backend-dcab`, ECS's default rolling deployment
+  (`wait-for-service-stability: true`) — not a Canary.
 - **Images:** Docker, built from `backend/` and pushed to Amazon ECR, tagged
   with the commit SHA.
-- **Database/auth:** built (spec 005) against local PostgreSQL; production
-  target is external managed PostgreSQL (Supabase or Neon) via `DATABASE_URL`
-  — not provisioned yet, and `DATABASE_URL`/`JWT_SECRET` must be added to the
-  ECS task definition before a deploy.
+- **Database/auth:** PostgreSQL via `DATABASE_URL`; `DATABASE_URL`,
+  `JWT_SECRET` and `MISTRAL_API_KEY` are set by hand on the ECS task
+  definition. Tables are created at startup; later columns are added by an
+  idempotent `ALTER TABLE ... ADD COLUMN IF NOT EXISTS` in `db.init_db` (no
+  migration tool yet).
 
-CI/CD: `.github/workflows/deploy.yml` runs on every push to `main` —
-checkout, AWS auth (`us-east-1`), Docker Buildx with GitHub Actions layer
-cache (`type=gha`), build+push to ECR, fetch the current ECS task definition,
-swap in the new image, deploy to Fargate. Needs `AWS_ACCESS_KEY_ID` /
-`AWS_SECRET_ACCESS_KEY` GitHub secrets, and `MISTRAL_API_KEY` set on the
-ECS task definition for compliance-check to work in production.
+CI/CD: `.github/workflows/deploy.yml`. Job `test` (every push to `main` and
+every pull request): backend `pytest`, frontend `eslint` + `tsc --noEmit`.
+Job `deploy` (push to `main` only, `needs: test`): AWS auth (`us-east-1`,
+long-lived `AWS_ACCESS_KEY_ID`/`AWS_SECRET_ACCESS_KEY` secrets — OIDC would be
+safer), Docker Buildx with GitHub Actions layer cache (`type=gha`),
+build+push to ECR, fetch the current ECS task definition, swap in the new
+image, deploy to Fargate.
 
 Production sizing (live-verified): the service runs in ECS Express mode, so the
 ALB is `ecs-express-gateway-alb-*`. `/compliance-check` is one synchronous
@@ -280,6 +303,10 @@ Done:
   or both — live-verified all three, including a fact only resolvable when
   both sources are combined. No OCR; unreadable pages are skipped with a
   warning shown to the user, not silently ignored.
+- Review hardening: session purge, blocking work off the event loop,
+  concurrency cap, Mistral retry, LLM answer validation, prompt-injection
+  framing, login timing + sign-up race, zip file-count limit, persisted
+  `pdf_warning`, non-root Docker image, first test suite + CI gate.
 
 Not done yet (from the original brief):
 - Cross-checking the checker's recommendation against the actual AI Act
@@ -293,22 +320,26 @@ Not done yet (from the original brief):
 - Visual polish on the frontend compliance-check flow — functional, not
   designed. `frontend/app/compliance/page.tsx` is a separate bare-bones page,
   for quick API-only testing. `/api/v1/analyses` (Repomix-only output) is no
-  longer used by any page but still exists as an endpoint.
-- No automated tests yet for any backend endpoint — every verification in
-  this project so far has been live manual/scripted testing against the real
-  API, not a committed test suite.
-- `MISTRAL_API_KEY` is set directly on the ECS task definition (not in CI
-  secrets; edited by hand, not managed as code). `DATABASE_URL` and
-  `JWT_SECRET` (spec 005) are not wired in yet, and no managed PostgreSQL is
-  provisioned — accounts/history won't work in production until both are set.
+  longer used by any page but still exists as an endpoint (login required).
+- Tests cover pure logic only (`backend/tests/`: LLM answer normalization and
+  retry, zip limits/traversal, concurrency limit, session expiry, PDF
+  extraction). No endpoint/DB tests and no browser test against the real
+  checker — those are still verified live.
+- `is_complete` is derived by string-matching the checker's results text
+  ("incomplete"/"not yet completed") — breaks silently if the site rewords it.
+- ECS env vars (`MISTRAL_API_KEY`, `DATABASE_URL`, `JWT_SECRET`) are edited by
+  hand on the task definition, not managed as code.
+- No rate limiting per user (only the global concurrency cap).
 - Reusing a previous result for an identical project (the fingerprint is
   stored for this, spec 005) — not built; a check always re-runs.
 - Session cache (`session_store.py`) is in-memory/single-process — lost on
-  restart, doesn't scale beyond one instance (documented trade-off, not an
-  oversight).
+  restart, and with more than one ECS task a resume can land on a task that
+  doesn't have the session (`404`); keep the service at 1 task or move
+  sessions to shared storage. Expired sessions are purged on every new
+  session / lookup, so abandoned ones no longer pile up in memory.
 - True 500MB-project support: upload size limits (`MAX_FILE_SIZE` etc. in
   `main.py`) are already raised to 500MB, but `code_index.py`'s indexing
-  would take ~90 minutes synchronously at current throughput for a project
+  would take on the order of half an hour at current throughput for a project
   that large — needs background processing or a faster embedding setup (see
   `specs/002-rag-code-retrieval/research.md`).
 - OCR for scanned/image-only PDFs — deliberately out of scope (spec 006): a

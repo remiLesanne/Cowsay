@@ -54,11 +54,12 @@ from source. Stale or verbose documentation is treated as a defect, not a nice-t
 - Frontend: Next.js.
 - Code-to-text preprocessing: Repomix (Node.js CLI, invoked as a subprocess).
 - Compliance agent: Playwright (headless Chromium) drives the official checker page;
-  the LLM (Z.AI GLM models, OpenAI-compatible API) answers each question from the
-  Repomix-derived code context.
-- Cloud target: AWS ECS on Fargate (cluster `default`), Canary deploy strategy, images in
-  Amazon ECR, deployed via GitHub Actions (`.github/workflows/deploy.yml`).
-- Planned, not yet built: managed PostgreSQL (Supabase or Neon) for user accounts/auth.
+  the LLM (Mistral `mistral-small-latest`, OpenAI-compatible API) answers each question
+  from the code/PDF excerpts retrieved for it.
+- Cloud: AWS ECS on Fargate (Express mode, cluster `default`), images in Amazon ECR,
+  deployed via GitHub Actions (`.github/workflows/deploy.yml`) only after the backend
+  tests and frontend lint/type-check pass.
+- Storage: PostgreSQL for user accounts and saved analyses (spec 005), via `DATABASE_URL`.
 - Secrets (API keys, DB URLs) are supplied via environment variables — `.env` locally
   (git-ignored), ECS task definition environment/secrets in production — never hardcoded.
 
@@ -81,4 +82,6 @@ PATCH: wording/clarity fixes). Any PR or review that conflicts with a principle 
 either be changed to comply or the constitution amended first — silent exceptions are not
 permitted.
 
-**Version**: 1.0.0 | **Ratified**: 2026-09-26 | **Last Amended**: 2026-09-26
+**Version**: 1.0.1 | **Ratified**: 2026-09-26 | **Last Amended**: 2026-09-27
+(1.0.1: Technology Constraints brought in line with what is actually deployed — Mistral
+instead of Z.AI, no Canary strategy, PostgreSQL built, CI test gate.)
