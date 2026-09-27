@@ -89,9 +89,18 @@ GET_VISIBLE_FIELDS_JS = """
 
         const question = extractQuestion(el);
         if (type === 'radio' || type === 'checkbox') {
-            const options = Array.from(el.querySelectorAll('input')).map(i => ({
-                id: i.id, value: i.value, checked: i.checked,
-            }));
+            // The site hides individual rows within an otherwise-visible group based
+            // on earlier answers (e.g. "Scope" hides the EU-establishment options for
+            // a Provider but not for a Deployer) via inline display:none on the row,
+            // while the wrapper itself stays visible for the rows that do apply.
+            // offsetParent is null once any ancestor up to the row is display:none,
+            // so this is the same "really visible" check used for the wrapper above,
+            // just applied per option (discovered via live testing 2026-09-27: a
+            // hidden option was still offered to the human and could never be
+            // clicked to apply it).
+            const options = Array.from(el.querySelectorAll('input'))
+                .filter(i => i.offsetParent !== null)
+                .map(i => ({ id: i.id, value: i.value, checked: i.checked }));
             results.push({ id: el.id, type, question, options });
         } else {
             const input = el.querySelector('input, textarea');
