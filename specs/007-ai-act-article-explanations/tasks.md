@@ -12,8 +12,8 @@
 
 ## Phase 1: Setup — the corpus
 
-- [ ] T001 Create `backend/scripts/build_ai_act_corpus.py` (stdlib `urllib` + `html.parser` only): download the EUR-Lex English HTML of Regulation (EU) 2024/1689, parse `art_N` blocks (title from `oj-sti-art`, paragraphs from `NNN.MMM` divs, points from table rows, chapter/section from the enclosing `cpt_X[.sct_N]`), annexes `anx_X` (title + one passage per top-level numbered item) and chapter/section titles + article lists; write `backend/data/ai_act_en.json` per data-model.md ("every article 1–113 and annex I–XIII present; passages in document order; `label` unique within its article/annex"); point passages carry their paragraph's intro sentence so they read standalone
-- [ ] T002 Run the script, commit `backend/data/ai_act_en.json`, and sanity-check it: 113 articles, 13 annexes, `5(1)(a)`…`5(1)(h)` present, Annex III item 4 is employment, `cpt_III.sct_2` lists articles 8–15
+- [X] T001 Create `backend/scripts/build_ai_act_corpus.py` (stdlib `urllib` + `html.parser` only): download the EUR-Lex English HTML of Regulation (EU) 2024/1689, parse `art_N` blocks (title from `oj-sti-art`, paragraphs from `NNN.MMM` divs, points from table rows, chapter/section from the enclosing `cpt_X[.sct_N]`), annexes `anx_X` (title + one passage per top-level numbered item) and chapter/section titles + article lists; write `backend/data/ai_act_en.json` per data-model.md ("every article 1–113 and annex I–XIII present; passages in document order; `label` unique within its article/annex"); point passages carry their paragraph's intro sentence so they read standalone
+- [X] T002 Run the script, commit `backend/data/ai_act_en.json`, and sanity-check it: 113 articles, 13 annexes, `5(1)(a)`…`5(1)(h)` present, Annex III item 4 is employment, `cpt_III.sct_2` lists articles 8–15
 
 ---
 
