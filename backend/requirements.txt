@@ -5,7 +5,8 @@ httpx
 playwright
 python-dotenv
 llama-index-core
-llama-index-embeddings-huggingface
+llama-index-embeddings-fastembed
+fastembed
 sqlalchemy>=2
 psycopg[binary]>=3
 pwdlib[argon2]

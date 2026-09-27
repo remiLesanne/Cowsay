@@ -16,31 +16,42 @@ MAX_CHUNK_CHARS = 4000
 # subdirectories, breaking the model download with a FileNotFoundError.
 EMBEDDING_CACHE_DIR = Path(__file__).parent / ".embeddings_cache"
 
-# Once the model is cached, skip HuggingFace Hub's online ETag/redirect checks
-# entirely (~15 network round-trips observed, several seconds) on every single
-# request — they only matter for picking up a model update, which never
-# happens for a pinned model name like this one. Must be set before importing
-# huggingface_hub (transitively, via llama_index/sentence_transformers) so it
-# reads the env var at import time.
-if any(EMBEDDING_CACHE_DIR.glob("models--*/snapshots/*/*")):
+# Once the model is cached, skip the network call fastembed otherwise makes on
+# every single startup (huggingface_hub's model_info(), to check the repo
+# revision) — live-verified: even with a fully warm cache it still attempts
+# this and only falls back to the cache once it fails/times out. Must be set
+# before importing huggingface_hub (transitively, via fastembed) so it reads
+# the env var at import time — HF_HUB_OFFLINE is read into a frozen constant
+# at that module's import, so setting it any later has no effect.
+# fastembed downloads via one of two sources depending on which responds
+# first, each with its own on-disk layout: a flat "fast-<model>/" directory,
+# or the standard huggingface_hub "models--<org>--<repo>/snapshots/*/" layout
+# (live-observed: repeated runs against the same empty cache picked different
+# ones) — check for either so a warm cache is never missed.
+_FASTEMBED_CACHE_GLOBS = ("fast-*/model.onnx", "models--*/snapshots/*/model.onnx")
+if any(list(EMBEDDING_CACHE_DIR.glob(pattern)) for pattern in _FASTEMBED_CACHE_GLOBS):
     os.environ.setdefault("HF_HUB_OFFLINE", "1")
 
 from llama_index.core import Document, VectorStoreIndex
 from llama_index.core.retrievers import VectorIndexRetriever
-from llama_index.embeddings.huggingface import HuggingFaceEmbedding
+from llama_index.embeddings.fastembed import FastEmbedEmbedding
 
 # Repomix's markdown output delimits each source file with "## File: <path>"
 # followed by a fenced code block (see backend/main.py, output_format="markdown").
 _FILE_HEADER_RE = re.compile(r"^## File: (.+)$", re.MULTILINE)
 
-_embed_model: HuggingFaceEmbedding | None = None
+_embed_model: FastEmbedEmbedding | None = None
 
 
-def _get_embed_model() -> HuggingFaceEmbedding:
+def _get_embed_model() -> FastEmbedEmbedding:
     global _embed_model
     if _embed_model is None:
-        _embed_model = HuggingFaceEmbedding(
-            model_name=EMBEDDING_MODEL_NAME, cache_folder=str(EMBEDDING_CACHE_DIR)
+        # ONNX Runtime instead of the sentence-transformers/PyTorch backend —
+        # live-benchmarked on the same model at ~2.7x the indexing throughput
+        # (28 -> 76 chunks/s on a 1MB synthetic project), no accuracy tradeoff
+        # since it's the same all-MiniLM-L6-v2 weights, just a different runtime.
+        _embed_model = FastEmbedEmbedding(
+            model_name=EMBEDDING_MODEL_NAME, cache_dir=str(EMBEDDING_CACHE_DIR)
         )
     return _embed_model
 
