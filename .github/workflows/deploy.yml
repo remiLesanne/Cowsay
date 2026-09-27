@@ -39,9 +39,12 @@ jobs:
 
       - name: Frontend lint and type-check
         working-directory: frontend
+        # `next typegen` first: Next 16's global types (LayoutProps, route types)
+        # are generated into .next/, which doesn't exist in a fresh checkout.
         run: |
           npm ci
           npm run lint
+          npx next typegen
           npx tsc --noEmit
 
   deploy:
