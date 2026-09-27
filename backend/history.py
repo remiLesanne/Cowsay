@@ -84,6 +84,10 @@ async def get_article_explanations(
         return cached.content
 
     content = await ai_act.explain(analysis.results_text, analysis.question_details)
+    if any(article["available"] and not article["explanation"] for article in content["articles"]):
+        # The LLM skipped an article: show what we have, but don't cache it, so the
+        # next visit tries again instead of keeping a hole forever.
+        return content
     # Upsert: two concurrent first loads (React dev mode fires effects twice) must not
     # collide on the primary key.
     statement = insert(ArticleExplanation).values(

@@ -103,6 +103,25 @@ def extract_references(results_text: str) -> list[dict]:
     return refs
 
 
+def _ref_key(text: str) -> tuple[str, str] | None:
+    """("article", "5") from "Article 5", "Article 5(1)(f)", "Article 5 — Prohibited…";
+    the LLM doesn't always echo a reference exactly as it was listed."""
+    match = re.search(r"\b(Article|Annex)\s+(\d+|[IVXL]+)", text or "", re.IGNORECASE)
+    return (match.group(1).lower(), match.group(2).upper()) if match else None
+
+
+def _generated_by_ref(answer: dict) -> dict[tuple[str, str], dict]:
+    items = answer.get("articles")
+    if not isinstance(items, list):  # e.g. {"Article 5": {...}} instead of the asked shape
+        items = [{**value, "ref": key} for key, value in answer.items() if isinstance(value, dict)]
+    by_ref: dict[tuple[str, str], dict] = {}
+    for item in items:
+        key = _ref_key(str(item.get("ref", ""))) if isinstance(item, dict) else None
+        if key:
+            by_ref.setdefault(key, item)
+    return by_ref
+
+
 def _ref_label(ref: dict) -> str:
     if ref["kind"] == "article":
         return f"Article {ref['number']}"
@@ -268,17 +287,19 @@ async def explain(results_text: str, question_details: list[dict]) -> dict:
     # Embedding is CPU-bound: off the event loop, like code_index in compliance_agent.
     selections = await asyncio.to_thread(_select_all, available, results_text, question_details)
 
-    by_ref: dict[str, dict] = {}
+    by_ref: dict[tuple[str, str], dict] = {}
     if selections:
         logger.info("Generating AI Act explanations for %s", [_ref_label(ref) for ref, _ in selections])
         answer = await _ask_llm(_prompt(results_text, question_details, selections))
-        by_ref = {item.get("ref", ""): item for item in answer.get("articles", []) if isinstance(item, dict)}
+        by_ref = _generated_by_ref(answer)
 
     selected = {id(ref): passages for ref, passages in selections}
     articles = []
     for ref in explained_refs:
         entry = _source_entry(ref)
-        generated = by_ref.get(_ref_label(ref), {})
+        generated = by_ref.get(_ref_key(_ref_label(ref)), {})
+        if entry is not None and not generated.get("explanation"):
+            logger.warning("No explanation generated for %s", _ref_label(ref))
         articles.append({
             "ref": _ref_label(ref),
             "kind": ref["kind"],

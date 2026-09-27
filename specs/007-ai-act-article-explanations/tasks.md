@@ -32,9 +32,9 @@
 - [X] T005 [US1] In `backend/ai_act.py`, `select_passages(ref, query)`: rank the passages of that article/annex only by cosine similarity to the query using `code_index`'s fastembed model; keep top 3 (all if ≤ 3) + always the explicitly cited paragraph's passages; the query is the analysis's question/answer pairs (question text + chosen answers) plus the verdict
 - [X] T006 [US1] In `backend/ai_act.py`, `explain(analysis)`: build refs + passages, one Mistral call reusing `compliance_agent`'s HTTP client / `LLM_API_URL` / `LLM_MODEL` with `response_format: {"type": "json_object"}`; prompt = verdict + Q/A pairs + selected passages only, answer in French, per article `explanation` / `why_it_applies` / `what_it_implies`, must say when the passages don't settle which part applies; assemble the explanation set (data-model.md): `url` to the French official text (`…/FR/TXT/HTML/?uri=OJ:L_202401689#art_N` / `#anx_X` / `#cpt_X.sct_N`), chapter/section refs → `see_also` without AI, unknown refs → `available: false`; statuses `incomplete` / `no_references` / `ready`; Mistral errors → 502/504 like `compliance_agent`
 - [X] T007 [US1] Add `GET /api/v1/history/{analysis_id}/articles` to `backend/history.py`: owner check → 404 exactly like `get_analysis`; incomplete → `{"status": "incomplete", ...}` without AI call; else return the stored set if `results_hash` matches SHA-256 of the current `results_text`, otherwise generate, upsert the `ArticleExplanation` row, return it
-- [ ] T008 [P] [US1] In `frontend/app/lib/api.ts`: types `ArticleExplanationSet` / `ExplainedArticle` / `SeeAlsoRef` and `getArticleExplanations(analysisId)` via `authFetch`
-- [ ] T009 [US1] Create `frontend/app/components/ArticleExplanations.tsx`: loads on mount (props: `analysisId`, `isComplete`, `resultsText` so it reloads when the verdict changes after a resume); states loading ("Analyse des articles de l'AI Act…"), error + "Réessayer", incomplete ("Complétez le formulaire pour obtenir l'explication des articles"), no references; per article a card: ref + title, explanation, "Pourquoi ça vous concerne", "Ce que ça implique", collapsible official excerpts labelled "Extrait officiel (version anglaise)" with their labels, link "Texte officiel (FR) ↗"; "Voir aussi" list; a note that the checker's verdict is authoritative and explanations are an AI reading aid (FR-010); same visual style as the result page
-- [ ] T010 [US1] Render `ArticleExplanations` in `frontend/app/analyse/page.tsx` right under the verdict card
+- [X] T008 [P] [US1] In `frontend/app/lib/api.ts`: types `ArticleExplanationSet` / `ExplainedArticle` / `SeeAlsoRef` and `getArticleExplanations(analysisId)` via `authFetch`
+- [X] T009 [US1] Create `frontend/app/components/ArticleExplanations.tsx`: loads on mount (props: `analysisId`, `isComplete`, `resultsText` so it reloads when the verdict changes after a resume); states loading ("Analyse des articles de l'AI Act…"), error + "Réessayer", incomplete ("Complétez le formulaire pour obtenir l'explication des articles"), no references; per article a card: ref + title, explanation, "Pourquoi ça vous concerne", "Ce que ça implique", collapsible official excerpts labelled "Extrait officiel (version anglaise)" with their labels, link "Texte officiel (FR) ↗"; "Voir aussi" list; a note that the checker's verdict is authoritative and explanations are an AI reading aid (FR-010); same visual style as the result page
+- [X] T010 [US1] Render `ArticleExplanations` in `frontend/app/analyse/page.tsx` right under the verdict card
 
 **Checkpoint**: quickstart 1-3, 5 pass.
 
@@ -45,7 +45,7 @@
 **Goal**: reuse stored explanations while the verdict is unchanged.
 **Independent test**: quickstart scenario 4.
 
-- [ ] T011 [US2] Verify end-to-end that a second call for the same verdict returns the stored set without a Mistral call (log line in `ai_act.explain` on each generation), and that a resume changing the verdict regenerates (hash mismatch) — fix `history.py` caching if not
+- [X] T011 [US2] Verify end-to-end that a second call for the same verdict returns the stored set without a Mistral call (log line in `ai_act.explain` on each generation), and that a resume changing the verdict regenerates (hash mismatch) — fix `history.py` caching if not
 
 ---
 

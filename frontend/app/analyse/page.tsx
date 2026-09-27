@@ -4,6 +4,7 @@ import Link from 'next/link';
 import { Suspense, useEffect, useState } from 'react';
 import { useSearchParams } from 'next/navigation';
 import AppHeader from '../components/AppHeader';
+import ArticleExplanations from '../components/ArticleExplanations';
 import { useRequireAuth } from '../components/useRequireAuth';
 import { getAnalysis, resumeComplianceCheck, type AnalysisResult, type QuestionDetail } from '../lib/api';
 
@@ -149,6 +150,8 @@ function AnalyseContent() {
             <p className="mt-2 text-sm text-slate-500">{result.questions_answered} question(s) répondue(s)</p>
             <pre className="mt-4 whitespace-pre-wrap font-sans text-sm leading-6 text-slate-800">{result.results_text}</pre>
           </div>
+
+          <ArticleExplanations analysisId={result.analysis_id} isComplete={result.is_complete} resultsText={result.results_text} />
 
           {result.needs_human_input.length > 0 && result.session_id && (
             <div className="mt-6 rounded-xl border border-amber-200 bg-amber-50 p-6">
