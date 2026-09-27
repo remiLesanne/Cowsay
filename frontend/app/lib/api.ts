@@ -140,12 +140,13 @@ export async function getMe(): Promise<User> {
 
 // `file` and `pdf` are each optional, but at least one is required (specs/006 FR-002) —
 // the backend rejects a request with neither before doing any processing.
+// Returns as soon as the analysis is queued (specs/007); follow it with getAnalysis.
 export async function runComplianceCheck(
   file: File | null,
   pdf?: File | null,
   companyName?: string,
   companyContext?: string,
-): Promise<AnalysisResult> {
+): Promise<SubmittedAnalysis> {
   const formData = new FormData();
   if (file) formData.append('file', file);
   if (pdf) formData.append('pdf', pdf);
@@ -167,7 +168,8 @@ export async function runComplianceCheck(
 
 export type HumanAnswer = { field_id: string; value: string | string[] };
 
-export async function resumeComplianceCheck(sessionId: string, answers: HumanAnswer[]): Promise<AnalysisResult> {
+// Queued like a new analysis (specs/007): the updated result arrives via getAnalysis.
+export async function resumeComplianceCheck(sessionId: string, answers: HumanAnswer[]): Promise<SubmittedAnalysis> {
   const response = await authFetch(`/api/v1/compliance-check/${sessionId}/answer`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -202,14 +204,39 @@ export type QuestionDetail = {
   source: 'ai' | 'human';
 };
 
+// queued -> running -> done | failed; answering pending questions queues it again.
+export type AnalysisStatus = 'queued' | 'running' | 'done' | 'failed';
+
+export function isActiveStatus(status: AnalysisStatus | undefined) {
+  return status === 'queued' || status === 'running';
+}
+
+// The 202 body of a submission or a resume.
+export type SubmittedAnalysis = {
+  analysis_id: string;
+  status: AnalysisStatus;
+  // 1-based rank among analyses still waiting; 0 = starting now.
+  queue_position: number | null;
+  estimated_wait_seconds: number | null;
+  filename: string;
+  session_id?: string;
+  pdf_warning?: string;
+};
+
 export type AnalysisResult = {
   analysis_id: string;
-  // Only present while the server-side session can still be resumed (30 min).
+  // Only present while the server-side session can still be resumed (30 min), and
+  // never while a run is queued/running.
   session_id: string | null;
   filename: string;
-  // Returned by a fresh check only (not stored).
-  file_count?: number;
   company_name?: string | null;
+  status: AnalysisStatus;
+  // Plain-language reason, when status is 'failed'.
+  error?: string | null;
+  queue_position?: number | null;
+  estimated_wait_seconds?: number | null;
+  started_at?: string | null;
+  finished_at?: string | null;
   is_complete: boolean;
   results_text: string;
   questions_answered: number;
@@ -229,6 +256,7 @@ export type AnalysisSummary = {
   filename: string;
   company_name: string | null;
   is_complete: boolean;
+  status: AnalysisStatus;
   created_at: string;
   updated_at: string;
 };

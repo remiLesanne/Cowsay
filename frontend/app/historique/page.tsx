@@ -6,6 +6,16 @@ import AppHeader from '../components/AppHeader';
 import { useRequireAuth } from '../components/useRequireAuth';
 import { listAnalyses, type AnalysisSummary } from '../lib/api';
 
+function StatusBadge({ analysis }: { analysis: AnalysisSummary }) {
+  const [label, style] =
+    analysis.status === 'queued' ? ['En attente', 'bg-sky-50 text-sky-700']
+    : analysis.status === 'running' ? ['En cours', 'bg-sky-50 text-sky-700']
+    : analysis.status === 'failed' ? ['Échec', 'bg-rose-50 text-rose-700']
+    : analysis.is_complete ? ['Complété', 'bg-emerald-50 text-emerald-700']
+    : ['Incomplet', 'bg-amber-50 text-amber-700'];
+  return <span className={`self-start rounded-full px-3 py-1 text-xs font-medium sm:self-auto ${style}`}>{label}</span>;
+}
+
 export default function HistoriquePage() {
   const user = useRequireAuth();
   const [analyses, setAnalyses] = useState<AnalysisSummary[] | null>(null);
@@ -65,9 +75,7 @@ export default function HistoriquePage() {
                       {analysis.company_name ? ` · ${analysis.company_name}` : ''}
                     </p>
                   </div>
-                  <span className={`self-start rounded-full px-3 py-1 text-xs font-medium sm:self-auto ${analysis.is_complete ? 'bg-emerald-50 text-emerald-700' : 'bg-amber-50 text-amber-700'}`}>
-                    {analysis.is_complete ? 'Complété' : 'Incomplet'}
-                  </span>
+                  <StatusBadge analysis={analysis} />
                 </Link>
               </li>
             ))}

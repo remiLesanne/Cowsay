@@ -5,7 +5,10 @@ import { Suspense, useEffect, useState } from 'react';
 import { useSearchParams } from 'next/navigation';
 import AppHeader from '../components/AppHeader';
 import { useRequireAuth } from '../components/useRequireAuth';
-import { getAnalysis, resumeComplianceCheck, type AnalysisResult, type QuestionDetail } from '../lib/api';
+import { getAnalysis, isActiveStatus, resumeComplianceCheck, type AnalysisResult, type QuestionDetail } from '../lib/api';
+
+// How often a queued/running analysis is re-read (specs/007 SC-003: ≤ 10 s).
+const POLL_INTERVAL_MS = 3000;
 
 function ArrowLeftIcon() {
   return <svg aria-hidden="true" className="h-4 w-4" fill="none" viewBox="0 0 24 24"><path d="M19 12H5m6 6-6-6 6-6" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.8" /></svg>;
@@ -28,6 +31,51 @@ function SourceBadge({ detail }: { detail: QuestionDetail }) {
   );
 }
 
+function formatWait(seconds?: number | null) {
+  if (!seconds) return 'quelques instants';
+  if (seconds < 60) return 'moins d’une minute';
+  return `environ ${Math.round(seconds / 60)} min`;
+}
+
+function StatusBadge({ result }: { result: AnalysisResult }) {
+  const [label, style] =
+    result.status === 'queued' ? ['En attente', 'bg-sky-50 text-sky-700']
+    : result.status === 'running' ? ['En cours', 'bg-sky-50 text-sky-700']
+    : result.status === 'failed' ? ['Échec', 'bg-rose-50 text-rose-700']
+    : result.is_complete ? ['Formulaire complété', 'bg-emerald-50 text-emerald-700']
+    : ['Formulaire incomplet', 'bg-amber-50 text-amber-700'];
+  return <span className={`rounded-full px-3 py-1.5 text-xs font-medium ${style}`}>{label}</span>;
+}
+
+function StatusBanner({ result }: { result: AnalysisResult }) {
+  const reassurance = 'Cette page se met à jour automatiquement. Vous pouvez la fermer : l’analyse continue et restera dans « Mes analyses ».';
+  if (result.status === 'queued' || result.status === 'running') {
+    const position = result.queue_position ?? 0;
+    const title = result.status === 'running'
+      ? 'Analyse en cours…'
+      : position > 0 ? `En file d’attente — position ${position}` : 'Démarrage de l’analyse…';
+    return (
+      <div className="mt-8 rounded-xl border border-sky-200 bg-sky-50 p-5 text-sm text-sky-800">
+        <p className="flex items-center gap-2 font-semibold"><span className="inline-block h-2 w-2 animate-pulse rounded-full bg-sky-500" />{title}</p>
+        {result.status === 'queued' && position > 0 && (
+          <p className="mt-1">D’autres analyses sont en cours. Attente estimée : {formatWait(result.estimated_wait_seconds)}.</p>
+        )}
+        <p className="mt-1 text-sky-700">{reassurance}</p>
+      </div>
+    );
+  }
+  if (result.status === 'failed') {
+    return (
+      <div className="mt-8 rounded-xl border border-rose-200 bg-rose-50 p-5 text-sm text-rose-700">
+        <p className="font-semibold">L’analyse a échoué</p>
+        {result.error && <p className="mt-1">{result.error}</p>}
+        <Link className="mt-2 inline-block font-medium underline" href="/">Relancer une analyse</Link>
+      </div>
+    );
+  }
+  return null;
+}
+
 function AnalyseContent() {
   const analysisId = useSearchParams().get('id');
   const [result, setResult] = useState<AnalysisResult | null>(null);
@@ -35,21 +83,39 @@ function AnalyseContent() {
   const [answers, setAnswers] = useState<Record<string, string | string[]>>({});
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState('');
+  // Bumped after a resume is queued, to start following the analysis again.
+  const [followKey, setFollowKey] = useState(0);
 
+  // Loads the analysis, then keeps re-reading it while it is queued or running
+  // (specs/007): the check no longer happens inside the submit request.
   useEffect(() => {
     if (!analysisId) return;
     let cancelled = false;
-    getAnalysis(analysisId)
-      .then((loaded) => {
-        if (!cancelled) setResult(loaded);
-      })
-      .catch((error) => {
-        if (!cancelled) setLoadError(error instanceof Error ? error.message : 'Impossible de charger cette analyse.');
-      });
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let following = false;
+    const load = async () => {
+      try {
+        const loaded = await getAnalysis(analysisId);
+        if (cancelled) return;
+        setResult(loaded);
+        setLoadError('');
+        following = isActiveStatus(loaded.status);
+      } catch (error) {
+        if (cancelled) return;
+        // A network blip while following a run just waits for the next poll.
+        if (!following) {
+          setLoadError(error instanceof Error ? error.message : 'Impossible de charger cette analyse.');
+          return;
+        }
+      }
+      if (following && !cancelled) timer = setTimeout(load, POLL_INTERVAL_MS);
+    };
+    load();
     return () => {
       cancelled = true;
+      if (timer) clearTimeout(timer);
     };
-  }, [analysisId]);
+  }, [analysisId, followKey]);
 
   const error = analysisId ? loadError : 'Aucune analyse sélectionnée.';
 
@@ -92,9 +158,17 @@ function AnalyseContent() {
     setIsSubmitting(true);
     setSubmitError('');
     try {
-      const updated = await resumeComplianceCheck(result.session_id, payload);
-      setResult((previous) => (previous ? { ...previous, ...updated } : updated));
+      const queued = await resumeComplianceCheck(result.session_id, payload);
+      setResult((previous) => (previous ? {
+        ...previous,
+        status: queued.status,
+        queue_position: queued.queue_position,
+        estimated_wait_seconds: queued.estimated_wait_seconds,
+        session_id: null,
+        error: null,
+      } : previous));
       setAnswers({});
+      setFollowKey((key) => key + 1);
     } catch (submitErr) {
       setSubmitError(submitErr instanceof Error ? submitErr.message : 'Erreur inconnue.');
     } finally {
@@ -121,11 +195,7 @@ function AnalyseContent() {
             </p>
           )}
         </div>
-        {result && (
-          <span className={`rounded-full px-3 py-1.5 text-xs font-medium ${result.is_complete ? 'bg-emerald-50 text-emerald-700' : 'bg-amber-50 text-amber-700'}`}>
-            {result.is_complete ? 'Formulaire complété' : 'Formulaire incomplet'}
-          </span>
-        )}
+        {result && <StatusBadge result={result} />}
         {error && <span className="rounded-full bg-rose-50 px-3 py-1.5 text-xs font-medium text-rose-700">Erreur</span>}
       </div>
 
@@ -139,18 +209,22 @@ function AnalyseContent() {
 
       {result && (
         <>
+          <StatusBanner result={result} />
           {result.pdf_warning && (
             <div className="mt-8 rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-800">
               {result.pdf_warning}
             </div>
           )}
-          <div className="mt-8 rounded-xl border border-slate-200 bg-white p-6 shadow-[0_12px_40px_rgba(15,23,42,0.05)]">
-            <p className="text-xs font-semibold uppercase tracking-[0.15em] text-[#277da1]">Recommandation de l’EU AI Act Compliance Checker</p>
-            <p className="mt-2 text-sm text-slate-500">{result.questions_answered} question(s) répondue(s)</p>
-            <pre className="mt-4 whitespace-pre-wrap font-sans text-sm leading-6 text-slate-800">{result.results_text}</pre>
-          </div>
+          {/* Empty until a first run has finished (the analysis now exists from submission). */}
+          {(result.results_text || result.question_details.length > 0) && (
+            <div className="mt-8 rounded-xl border border-slate-200 bg-white p-6 shadow-[0_12px_40px_rgba(15,23,42,0.05)]">
+              <p className="text-xs font-semibold uppercase tracking-[0.15em] text-[#277da1]">Recommandation de l’EU AI Act Compliance Checker</p>
+              <p className="mt-2 text-sm text-slate-500">{result.questions_answered} question(s) répondue(s)</p>
+              <pre className="mt-4 whitespace-pre-wrap font-sans text-sm leading-6 text-slate-800">{result.results_text}</pre>
+            </div>
+          )}
 
-          {result.needs_human_input.length > 0 && result.session_id && (
+          {result.needs_human_input.length > 0 && result.session_id && !isActiveStatus(result.status) && (
             <div className="mt-6 rounded-xl border border-amber-200 bg-amber-50 p-6">
               <p className="text-sm font-semibold text-amber-800">
                 {result.needs_human_input.length} question(s) nécessitent une réponse humaine
@@ -226,7 +300,7 @@ function AnalyseContent() {
             </div>
           )}
 
-          {result.needs_human_input.length > 0 && !result.session_id && (
+          {result.needs_human_input.length > 0 && !result.session_id && !isActiveStatus(result.status) && (
             <div className="mt-6 rounded-xl border border-amber-200 bg-amber-50 p-6 text-sm text-amber-800">
               <p className="font-semibold">{result.needs_human_input.length} question(s) restaient sans réponse</p>
               <ul className="mt-2 list-disc space-y-1 pl-5 text-amber-900">

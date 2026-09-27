@@ -98,8 +98,9 @@ export default function Home() {
     setIsAnalysing(true);
     setMessage('');
     try {
-      const result = await runComplianceCheck(file, pdf);
-      router.push(`/analyse?id=${encodeURIComponent(result.analysis_id)}`);
+      // Returns as soon as the analysis is queued; its page follows it to the result.
+      const submitted = await runComplianceCheck(file, pdf);
+      router.push(`/analyse?id=${encodeURIComponent(submitted.analysis_id)}`);
     } catch (error) {
       setMessage(error instanceof Error ? error.message : 'Impossible d’analyser ce fichier.');
       setIsAnalysing(false);
@@ -143,7 +144,7 @@ export default function Home() {
           {pdfMessage && <p className="pt-2 text-sm text-rose-600">{pdfMessage}</p>}
         </div>
 
-        <button className="mt-6 inline-flex h-12 w-full items-center justify-center rounded-lg bg-[#173f5f] px-7 text-sm font-semibold text-white transition hover:bg-[#12344f] disabled:cursor-not-allowed disabled:bg-slate-300 sm:w-auto" disabled={(!file && !pdf) || isAnalysing} onClick={openAnalysis} type="button">{isAnalysing ? 'Analyse en cours (jusqu’à 2 min)…' : 'Lancer l’analyse'}</button>
+        <button className="mt-6 inline-flex h-12 w-full items-center justify-center rounded-lg bg-[#173f5f] px-7 text-sm font-semibold text-white transition hover:bg-[#12344f] disabled:cursor-not-allowed disabled:bg-slate-300 sm:w-auto" disabled={(!file && !pdf) || isAnalysing} onClick={openAnalysis} type="button">{isAnalysing ? 'Envoi en cours…' : 'Lancer l’analyse'}</button>
         {!file && !pdf && <p className="mt-3 text-xs text-rose-500">Ajoutez un fichier de code ou un PDF pour continuer.</p>}
         <p className="mt-5 text-xs text-slate-400">Vos fichiers sont utilisés uniquement pour cette analyse.</p>
       </section>
