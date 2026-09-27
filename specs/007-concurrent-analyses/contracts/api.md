@@ -54,9 +54,9 @@ Adds to the existing body:
   "finished_at": "…" | null
 }
 ```
-`session_id` is returned only when `status == "done"` and the session is still alive
-(answering is not offered while a run is queued/running). Polled by the frontend every
-3 s while `status` is `queued` or `running`.
+`session_id` is returned only when no run is queued/running (`done`, or `failed` after a
+resume — so a failed resume can be retried) and the session is still alive. Polled by
+the frontend every 3 s while `status` is `queued` or `running`.
 
 ## `GET /api/v1/history` — adds `status`
 

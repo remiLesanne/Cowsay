@@ -4,7 +4,9 @@
 
 **Created**: 2026-09-27
 
-**Status**: Draft
+**Status**: Implemented (2026-09-27) — all success criteria live-verified except the
+frontend's visual rendering (no browser available; checked by lint/tsc/build only).
+Results recorded in `tasks.md`.
 
 **Input**: User description: "Let 10+ users run compliance checks at the same time. Today at
 most MAX_CONCURRENT_CHECKS (2) run per process and extra requests get an immediate 503; the
