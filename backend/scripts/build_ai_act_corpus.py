@@ -4,21 +4,26 @@ One-off dev tool (specs/007-ai-act-article-explanations): the backend only reads
 committed JSON, so no external site is needed at request time. Standard library only —
 no HTML-parsing dependency added to the backend for a script run once.
 
-    cd backend && .venv/bin/python scripts/build_ai_act_corpus.py [--html saved_page.html]
+    cd backend && .venv/bin/python scripts/build_ai_act_corpus.py [--html en.html] [--html-fr fr.html]
 
-Source: Regulation (EU) 2024/1689, Official Journal English HTML on EUR-Lex. EU legal
-texts may be reused with attribution (Commission Decision 2011/833/EU).
+Source: Regulation (EU) 2024/1689, Official Journal HTML on EUR-Lex — English text for
+the passages (the checker and the embedding model are English), official French titles
+(`title_fr`) for display. EU legal texts may be reused with attribution (Commission
+Decision 2011/833/EU). EUR-Lex sometimes answers an automated request with an empty
+202 (bot protection): the download is retried a few times.
 """
 
 import argparse
 import json
 import re
+import time
 import urllib.request
 from datetime import date
 from html.parser import HTMLParser
 from pathlib import Path
 
 SOURCE_URL = "https://eur-lex.europa.eu/legal-content/EN/TXT/HTML/?uri=OJ:L_202401689"
+SOURCE_URL_FR = "https://eur-lex.europa.eu/legal-content/FR/TXT/HTML/?uri=OJ:L_202401689"
 OUTPUT_PATH = Path(__file__).resolve().parent.parent / "data" / "ai_act_en.json"
 
 _VOID_TAGS = {"area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "source", "wbr"}
@@ -242,19 +247,44 @@ def build(html: str) -> dict:
     }
 
 
+def add_french_titles(corpus: dict, html_fr: str) -> None:
+    """Official French titles, same ids in every language version of the OJ HTML."""
+    french = build(html_fr)
+    for group in ("articles", "annexes"):
+        for key, entry in corpus[group].items():
+            entry["title_fr"] = french[group].get(key, {}).get("title", "")
+    for key, chapter in corpus["chapters"].items():
+        french_chapter = french["chapters"].get(key, {})
+        chapter["title_fr"] = french_chapter.get("title", "")
+        for section_key, section in chapter["sections"].items():
+            section["title_fr"] = french_chapter.get("sections", {}).get(section_key, {}).get("title", "")
+
+
+def _download(url: str) -> str:
+    request = urllib.request.Request(url, headers={
+        "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130 Safari/537.36",
+        "Accept": "text/html",
+    })
+    for attempt in range(4):
+        with urllib.request.urlopen(request, timeout=120) as response:
+            body = response.read().decode("utf-8")
+            if response.status == 200 and "eli-subdivision" in body:
+                return body
+        time.sleep(20)
+    raise RuntimeError(f"EUR-Lex did not return the text after retries: {url}")
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("--html", type=Path, help="parse a saved copy instead of downloading")
+    parser.add_argument("--html", type=Path, help="parse a saved English copy instead of downloading")
+    parser.add_argument("--html-fr", type=Path, help="parse a saved French copy instead of downloading")
     args = parser.parse_args()
 
-    if args.html:
-        html = args.html.read_text(encoding="utf-8")
-    else:
-        request = urllib.request.Request(SOURCE_URL, headers={"User-Agent": "Mozilla/5.0 (cowsay corpus builder)"})
-        with urllib.request.urlopen(request, timeout=120) as response:
-            html = response.read().decode("utf-8")
+    html = args.html.read_text(encoding="utf-8") if args.html else _download(SOURCE_URL)
+    html_fr = args.html_fr.read_text(encoding="utf-8") if args.html_fr else _download(SOURCE_URL_FR)
 
     corpus = build(html)
+    add_french_titles(corpus, html_fr)
     OUTPUT_PATH.parent.mkdir(parents=True, exist_ok=True)
     OUTPUT_PATH.write_text(json.dumps(corpus, ensure_ascii=False, indent=1), encoding="utf-8")
     passages = sum(len(a["passages"]) for a in corpus["articles"].values())

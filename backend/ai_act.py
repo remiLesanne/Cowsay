@@ -172,10 +172,11 @@ def _official_url(ref: dict) -> str:
 def _see_also_entry(ref: dict) -> dict:
     chapter = load_corpus()["chapters"].get(ref["number"], {})
     source = chapter["sections"].get(ref["section"], {}) if ref.get("section") and chapter else chapter
-    title = source.get("title", "")
+    title = source.get("title_fr") or source.get("title", "")
     return {
         "ref": _ref_label(ref),
-        "title": title.capitalize() if title.isupper() else title,
+        # Chapter titles are upper case in the OJ ("SYSTÈMES D’IA À HAUT RISQUE").
+        "title": re.sub(r"\bia\b", "IA", title.capitalize()) if title.isupper() else title,
         "articles": source.get("articles", []),
         "url": _official_url(ref),
     }
@@ -282,7 +283,8 @@ async def explain(results_text: str, question_details: list[dict]) -> dict:
             "ref": _ref_label(ref),
             "kind": ref["kind"],
             "number": ref["number"],
-            "title": generated.get("title_fr") or (entry or {}).get("title", ""),
+            # Official French title from the corpus; the LLM's translation only as a fallback.
+            "title": (entry or {}).get("title_fr") or generated.get("title_fr") or (entry or {}).get("title", ""),
             "url": _official_url(ref),
             "available": entry is not None,
             "passages": [{"label": p["label"], "text": p["text"]} for p in selected.get(id(ref), [])],
