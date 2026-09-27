@@ -57,10 +57,23 @@ function AnalyseContent() {
     setAnswers((previous) => ({ ...previous, [fieldId]: value }));
   };
 
+  // The real checker form treats "None of the above" as exclusive with every
+  // other option in its group (live-verified: checking it there clears the
+  // others, and checking another option afterwards is rejected by the site's
+  // own JS). Our own review UI has no such rule by default, so a human could
+  // submit both at once — replayed onto the real form via Playwright, that's
+  // an order-dependent, effectively undefined result. Mirror it here instead.
+  const isNoneOfTheAbove = (option: string) => option.trim().toLowerCase() === 'none of the above';
+
   const toggleCheckboxAnswer = (fieldId: string, option: string, checked: boolean) => {
     setAnswers((previous) => {
       const current = Array.isArray(previous[fieldId]) ? (previous[fieldId] as string[]) : [];
-      const next = checked ? [...current, option] : current.filter((value) => value !== option);
+      if (!checked) {
+        return { ...previous, [fieldId]: current.filter((value) => value !== option) };
+      }
+      const next = isNoneOfTheAbove(option)
+        ? [option]
+        : [...current.filter((value) => !isNoneOfTheAbove(value)), option];
       return { ...previous, [fieldId]: next };
     });
   };
