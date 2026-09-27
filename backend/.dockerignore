@@ -4,3 +4,6 @@ node_modules/
 __pycache__/
 *.py[cod]
 .embeddings_cache/
+tests/
+.pytest_cache/
+requirements-dev.txt
