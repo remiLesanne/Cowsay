@@ -78,7 +78,8 @@ async def get_article_explanations(
         # A non-final verdict isn't explained (spec 007 Edge Cases): no AI call, nothing stored.
         return {"status": "incomplete", "articles": [], "see_also": []}
 
-    results_hash = hashlib.sha256(analysis.results_text.encode()).hexdigest()
+    # Verdict + prompt version: a changed verdict or a changed prompt regenerates.
+    results_hash = hashlib.sha256(f"v{ai_act.EXPLANATION_VERSION}\n{analysis.results_text}".encode()).hexdigest()
     cached = db.get(ArticleExplanation, analysis.id)
     if cached is not None and cached.results_hash == results_hash:
         return cached.content

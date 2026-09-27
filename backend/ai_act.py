@@ -28,6 +28,9 @@ OFFICIAL_FR_URL = "https://eur-lex.europa.eu/legal-content/FR/TXT/HTML/?uri=OJ:L
 MAX_EXPLAINED_REFS = 8
 PASSAGES_PER_REF = 3
 MAX_PASSAGE_CHARS_IN_PROMPT = 1500
+# Part of the cache key (history.py): bump it when the prompt changes so explanations
+# stored with an older prompt are regenerated instead of served forever.
+EXPLANATION_VERSION = 2
 
 _CHAPTER_RE = re.compile(r"\bChapter\s+([IVXL]+)(?:\s*,?\s*Section\s+(\d+))?")
 _ANNEX_RE = re.compile(r"\bAnnex(?:es)?\s+([IVXL]+(?:\s*(?:,|and|or)\s*[IVXL]+)*)\b")
@@ -226,14 +229,18 @@ def _prompt(results_text: str, question_details: list[dict], selections: list[tu
         f"Questionnaire answers:\n{chr(10).join(qa_lines) or '(none)'}\n\n"
         f"Official excerpts of the articles the verdict cites (English, Regulation (EU) 2024/1689):\n\n"
         f"{chr(10).join(blocks)}\n\n"
-        "For EACH of these references: " + refs_list + ", write in French, using ONLY the "
-        "excerpts above and the answers:\n"
+        "Strict rules: every statement must be supported by the excerpts above or by a "
+        "questionnaire answer. Never draw a conclusion from the system's name or file names. "
+        "Do not add obligations, penalties or facts that the excerpts do not contain.\n\n"
+        "For EACH of these references: " + refs_list + ", write in French:\n"
         "- title_fr: the article's title in French\n"
-        "- explanation: what the cited provision says, in plain language (2-3 sentences)\n"
-        "- why_it_applies: why it concerns this system given the answers — name the specific "
-        "point (e.g. 5(1)(f)) when the excerpts and answers show which one; if they do not "
+        "- explanation: what the excerpts shown for it say, in plain language (2-3 sentences)\n"
+        "- why_it_applies: go through the excerpts shown for this reference; for each one that "
+        "matches an answer, cite its label (e.g. 5(1)(f)) and the answer that triggers it; if an "
+        "excerpt does not apply to this system, say so in a few words; if the answers do not "
         "settle which point applies, say so explicitly instead of guessing\n"
-        "- what_it_implies: the concrete consequence or obligation for the team (1-3 sentences)\n\n"
+        "- what_it_implies: the concrete consequence for the team, as stated by the excerpts "
+        "(1-3 sentences)\n\n"
         'Reply with ONLY a JSON object: {"articles": [{"ref": "<reference exactly as listed>", '
         '"title_fr": "...", "explanation": "...", "why_it_applies": "...", "what_it_implies": "..."}]}'
     )
