@@ -53,6 +53,24 @@ class Analysis(Base):
     )
 
 
+class ArticleExplanation(Base):
+    # A separate table rather than a column on `analyses`: create_all creates missing
+    # tables but never alters existing ones, and `analyses` already exists in
+    # production (specs/007-ai-act-article-explanations/research.md).
+    __tablename__ = "article_explanations"
+
+    analysis_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("analyses.id", ondelete="CASCADE"), primary_key=True
+    )
+    # SHA-256 of the verdict the explanations were produced for: a resume round that
+    # changes the verdict makes them stale (spec 007 FR-007).
+    results_hash: Mapped[str] = mapped_column(String(64))
+    content: Mapped[dict] = mapped_column(JSONB)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
 def init_db() -> None:
     # create_all instead of migrations: two new tables, no existing data to migrate
     # (accepted trade-off, see research.md).
