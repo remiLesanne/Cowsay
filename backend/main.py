@@ -1,6 +1,8 @@
+import asyncio
 import hashlib
 import io
 import logging
+import os
 import subprocess
 import sys
 import time
@@ -48,6 +50,12 @@ MAX_ZIP_FILE_SIZE = 500 * 1024 * 1024
 MAX_ARCHIVE_SIZE = 500 * 1024 * 1024
 MAX_ARCHIVE_FILES = 5000
 REPOMIX_TIMEOUT_SECONDS = 300
+# Each check holds a Chromium instance plus a full embedding index in memory, so
+# an unbounded number of them in parallel would take the task down for everyone.
+# Extra requests are turned away immediately rather than queued: a queued request
+# would just run into the ALB's 300s idle timeout (see README, Deployment).
+MAX_CONCURRENT_CHECKS = int(os.environ.get("MAX_CONCURRENT_CHECKS", "2"))
+_check_slots = asyncio.Semaphore(MAX_CONCURRENT_CHECKS)
 # On Windows, npm's extensionless ".bin/repomix" is a POSIX shell script that
 # Windows can't execute directly (WinError 193) — the ".cmd" shim is the real
 # entry point there. Linux/Docker (production) uses the extensionless script.
@@ -93,6 +101,17 @@ def read_root():
         "message": "Cowsay backend API",
         "version": "1.0"
     }
+
+@asynccontextmanager
+async def _check_slot():
+    if _check_slots.locked():
+        raise HTTPException(
+            status_code=503,
+            detail="Le serveur traite déjà le maximum d’analyses simultanées, merci de réessayer dans quelques minutes",
+        )
+    async with _check_slots:
+        yield
+
 
 def _is_ignored_archive_path(path: Path) -> bool:
     return any(
@@ -145,6 +164,7 @@ def _run_repomix(project_dir: Path, output_format: Literal["xml", "markdown"]):
 
 def _write_zip_to_project(archive: zipfile.ZipFile, project_dir: Path) -> list[str]:
     source_files = []
+    written_files = 0
     uncompressed_size = 0
 
     for entry in archive.infolist():
@@ -170,7 +190,9 @@ def _write_zip_to_project(archive: zipfile.ZipFile, project_dir: Path) -> list[s
                 detail="Le contenu décompressé dépasse la limite autorisée",
             )
 
-        if len(source_files) >= MAX_ARCHIVE_FILES:
+        # Counts every file written to disk, not just source files: an archive of
+        # thousands of tiny non-source files is just as costly to extract and hash.
+        if written_files >= MAX_ARCHIVE_FILES:
             raise HTTPException(
                 status_code=413,
                 detail="L’archive contient trop de fichiers",
@@ -185,6 +207,7 @@ def _write_zip_to_project(archive: zipfile.ZipFile, project_dir: Path) -> list[s
 
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_bytes(archive.read(entry))
+        written_files += 1
 
         if entry_path.suffix.lower() in ALLOWED_EXTENSIONS - {".zip"}:
             source_files.append(normalized_name)
@@ -237,7 +260,7 @@ async def _extract_pdf_upload(pdf: UploadFile) -> tuple[bytes, str, str | None]:
         raise HTTPException(status_code=400, detail="Le PDF est vide")
 
     try:
-        extracted = extract_pdf_text(content, filename)
+        extracted = await asyncio.to_thread(extract_pdf_text, content, filename)
     except InvalidPdfError as error:
         raise HTTPException(status_code=400, detail="PDF invalide") from error
 
@@ -285,6 +308,18 @@ async def _convert_upload_to_repomix(
     if not content:
         raise HTTPException(status_code=400, detail="Le fichier est vide")
 
+    # Extraction, hashing and the Repomix subprocess are all blocking; run in a
+    # worker thread so one large upload doesn't freeze every other request
+    # (including /health, which the load balancer uses to decide the task is dead).
+    representation, source_files, fingerprint = await asyncio.to_thread(
+        _prepare_project, content, filename, extension, output_format
+    )
+    return representation, source_files, extension, fingerprint
+
+
+def _prepare_project(
+    content: bytes, filename: str, extension: str, output_format: Literal["xml", "markdown"]
+) -> tuple[str, list[str], str]:
     source_files = []
     with TemporaryDirectory(prefix="ai-risk-check-") as temporary_directory:
         project_dir = Path(temporary_directory) / "project"
@@ -304,16 +339,20 @@ async def _convert_upload_to_repomix(
         fingerprint = _fingerprint_project(project_dir)
         representation = _run_repomix(project_dir, output_format)
 
-    return representation, source_files, extension, fingerprint
+    return representation, source_files, fingerprint
 
 
-@app.post("/api/v1/analyses")
+# Login required: it accepts the same 500 MB uploads and runs the same Repomix
+# subprocess as /compliance-check, so leaving it public was an open door to
+# exhausting the server's CPU/disk without an account.
+@app.post("/api/v1/analyses", dependencies=[Depends(get_current_user)])
 async def create_analysis(
     file: UploadFile = File(...),
     output_format: Literal["xml", "markdown"] = "xml",
 ):
     """Convert an uploaded project to an AI-friendly Repomix representation."""
-    representation, source_files, extension, _ = await _convert_upload_to_repomix(file, output_format)
+    async with _check_slot():
+        representation, source_files, extension, _ = await _convert_upload_to_repomix(file, output_format)
 
     return {
         "analysis_id": "temporary-id",
@@ -373,37 +412,38 @@ async def create_compliance_check(
             detail="Merci de fournir au moins un fichier de code ou un PDF",
         )
 
-    code_representation = ""
-    source_files: list[str] = []
-    code_fingerprint = ""
-    filenames: list[str] = []
+    async with _check_slot():
+        code_representation = ""
+        source_files: list[str] = []
+        code_fingerprint = ""
+        filenames: list[str] = []
 
-    if file is not None:
-        code_representation, source_files, _, code_fingerprint = await _convert_upload_to_repomix(
-            file, "markdown"
+        if file is not None:
+            code_representation, source_files, _, code_fingerprint = await _convert_upload_to_repomix(
+                file, "markdown"
+            )
+            filenames.append(file.filename or "")
+
+        pdf_text = ""
+        pdf_warning: str | None = None
+        pdf_bytes = b""
+        if pdf is not None:
+            pdf_bytes, pdf_text, pdf_warning = await _extract_pdf_upload(pdf)
+            filenames.append(pdf.filename or "")
+
+        # Both sources become one opaque text blob for the existing chunker/index
+        # (code_index.py's "## File:" header convention already covers both — see
+        # specs/006-pdf-document-input/plan.md) — no change needed there at all.
+        representation = "\n\n".join(part for part in (code_representation, pdf_text) if part)
+        fingerprint = _combined_fingerprint(code_fingerprint, pdf_bytes)
+        display_filename = " + ".join(name for name in filenames if name)
+
+        extra_context = f"Company name: {company_name}\n{company_context or ''}".strip()
+        result, project_index = await run_compliance_check(
+            code_context=representation,
+            system_name=company_name,
+            extra_context=extra_context,
         )
-        filenames.append(file.filename or "")
-
-    pdf_text = ""
-    pdf_warning: str | None = None
-    pdf_bytes = b""
-    if pdf is not None:
-        pdf_bytes, pdf_text, pdf_warning = await _extract_pdf_upload(pdf)
-        filenames.append(pdf.filename or "")
-
-    # Both sources become one opaque text blob for the existing chunker/index
-    # (code_index.py's "## File:" header convention already covers both — see
-    # specs/006-pdf-document-input/plan.md) — no change needed there at all.
-    representation = "\n\n".join(part for part in (code_representation, pdf_text) if part)
-    fingerprint = _combined_fingerprint(code_fingerprint, pdf_bytes)
-    display_filename = " + ".join(name for name in filenames if name)
-
-    extra_context = f"Company name: {company_name}\n{company_context or ''}".strip()
-    result, project_index = await run_compliance_check(
-        code_context=representation,
-        system_name=company_name,
-        extra_context=extra_context,
-    )
 
     # Saved only once the check succeeded: a failed run raises above and leaves
     # nothing behind (spec 005 Edge Cases).
@@ -416,6 +456,7 @@ async def create_compliance_check(
         is_complete=result["is_complete"],
         question_details=result["question_details"],
         needs_human_input=result["needs_human_input"],
+        pdf_warning=pdf_warning,
     )
     db.add(analysis)
     db.commit()
@@ -489,12 +530,13 @@ async def answer_compliance_check(
     # the session exactly as it was.
     session.human_answers.update(accepted)
 
-    result = await run_compliance_check_with_index(
-        session.project_index,
-        system_name=session.system_name,
-        extra_context=session.extra_context,
-        human_answers=session.human_answers,
-    )
+    async with _check_slot():
+        result = await run_compliance_check_with_index(
+            session.project_index,
+            system_name=session.system_name,
+            extra_context=session.extra_context,
+            human_answers=session.human_answers,
+        )
     session.unresolved_by_field_id = _index_unresolved(result["needs_human_input"])
 
     analysis = db.get(Analysis, session.analysis_id)
@@ -505,12 +547,17 @@ async def answer_compliance_check(
         analysis.needs_human_input = result["needs_human_input"]
         db.commit()
 
-    return {
+    response = {
         "session_id": session_id,
         "analysis_id": str(session.analysis_id),
         "filename": analysis.filename if analysis else "",
         **result,
     }
+    # Kept across resume rounds: the PDF pages that couldn't be read are still
+    # missing from the answers, so the warning stays relevant.
+    if analysis is not None and analysis.pdf_warning:
+        response["pdf_warning"] = analysis.pdf_warning
+    return response
 
 
 @app.get("/health")

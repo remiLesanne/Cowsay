@@ -51,6 +51,7 @@ def get_analysis(
         "questions_answered": len(analysis.question_details),
         "question_details": analysis.question_details,
         "needs_human_input": analysis.needs_human_input,
+        "pdf_warning": analysis.pdf_warning,
         "created_at": analysis.created_at,
         "updated_at": analysis.updated_at,
     }

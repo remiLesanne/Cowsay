@@ -72,7 +72,7 @@ export async function analyzeFile(file: File, outputFormat: 'xml' | 'markdown' =
   const formData = new FormData();
   formData.append('file', file);
 
-  const response = await fetch(`${API_URL}/api/v1/analyses?output_format=${outputFormat}`, {
+  const response = await authFetch(`/api/v1/analyses?output_format=${outputFormat}`, {
     method: 'POST',
     body: formData,
   });
@@ -219,7 +219,9 @@ export type AnalysisResult = {
   updated_at?: string;
   // Present only when a meaningful share of a submitted PDF's pages had no
   // extractable text (specs/006 FR-006a) — e.g. a scanned/image-only document.
-  pdf_warning?: string;
+  // Saved with the analysis, so a reopened one (history) shows it too (null there
+  // when there was nothing to warn about).
+  pdf_warning?: string | null;
 };
 
 export type AnalysisSummary = {

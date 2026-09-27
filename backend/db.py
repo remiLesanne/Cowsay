@@ -2,7 +2,7 @@ import os
 import uuid
 from datetime import datetime
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, String, Text, Uuid, create_engine, func
+from sqlalchemy import Boolean, DateTime, ForeignKey, String, Text, Uuid, create_engine, func, text
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, sessionmaker
 
@@ -47,6 +47,9 @@ class Analysis(Base):
     is_complete: Mapped[bool] = mapped_column(Boolean)
     question_details: Mapped[list] = mapped_column(JSONB, default=list)
     needs_human_input: Mapped[list] = mapped_column(JSONB, default=list)
+    # specs/006: why part of a submitted PDF was ignored, so a reopened analysis
+    # still tells the user its answers didn't use those pages.
+    pdf_warning: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
@@ -57,6 +60,10 @@ def init_db() -> None:
     # create_all instead of migrations: two new tables, no existing data to migrate
     # (accepted trade-off, see research.md).
     Base.metadata.create_all(engine)
+    # create_all never alters an existing table, so columns added after the first
+    # deploy are added here, idempotently, until the project moves to migrations.
+    with engine.begin() as connection:
+        connection.execute(text("ALTER TABLE analyses ADD COLUMN IF NOT EXISTS pdf_warning TEXT"))
 
 
 def get_db():

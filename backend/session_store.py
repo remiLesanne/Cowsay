@@ -28,6 +28,15 @@ class ComplianceSession:
     expires_at: float = 0.0
 
 
+def _purge_expired() -> None:
+    # get_session only drops the one expired entry it's asked about, so a session
+    # nobody comes back to would otherwise hold its ProjectIndex (embeddings of the
+    # whole project) in memory until the process restarts.
+    now = time.time()
+    for session_id in [sid for sid, session in _sessions.items() if session.expires_at < now]:
+        del _sessions[session_id]
+
+
 def create_session(
     project_index: ProjectIndex,
     user_id: uuid.UUID,
@@ -35,6 +44,7 @@ def create_session(
     system_name: str | None,
     extra_context: str | None,
 ) -> str:
+    _purge_expired()
     session_id = uuid.uuid4().hex
     _sessions[session_id] = ComplianceSession(
         project_index=project_index,
@@ -61,8 +71,8 @@ def get_session(session_id: str) -> ComplianceSession | None:
 def find_session_id_by_analysis(analysis_id: uuid.UUID) -> str | None:
     """The live session for a saved analysis, if it hasn't expired — lets a
     reopened analysis still offer its pending questions (specs/005)."""
-    now = time.time()
+    _purge_expired()
     for session_id, session in _sessions.items():
-        if session.analysis_id == analysis_id and session.expires_at >= now:
+        if session.analysis_id == analysis_id:
             return session_id
     return None
