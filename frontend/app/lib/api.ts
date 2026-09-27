@@ -245,3 +245,37 @@ export async function listAnalyses(): Promise<AnalysisSummary[]> {
   if (!response.ok) throw new Error('Impossible de charger vos analyses.');
   return response.json();
 }
+
+// specs/007 — explanations of the AI Act articles the checker's verdict cites.
+export type ArticlePassage = { label: string; text: string };
+
+export type ExplainedArticle = {
+  ref: string;
+  kind: 'article' | 'annex';
+  number: string;
+  title: string;
+  url: string;
+  // false when the verdict cites something absent from the stored AI Act text.
+  available: boolean;
+  passages: ArticlePassage[];
+  explanation: string;
+  why_it_applies: string;
+  what_it_implies: string;
+};
+
+export type SeeAlsoRef = { ref: string; title: string; articles: string[]; url: string };
+
+export type ArticleExplanationSet = {
+  status: 'ready' | 'incomplete' | 'no_references';
+  articles: ExplainedArticle[];
+  see_also: SeeAlsoRef[];
+};
+
+export async function getArticleExplanations(analysisId: string): Promise<ArticleExplanationSet> {
+  const response = await authFetch(`/api/v1/history/${encodeURIComponent(analysisId)}/articles`);
+  if (!response.ok) {
+    const error = await response.json().catch(() => null);
+    throw new Error(detailToMessage(error?.detail, 'Impossible d’expliquer les articles pour le moment.'));
+  }
+  return response.json();
+}

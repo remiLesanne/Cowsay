@@ -23,7 +23,27 @@ Next.js frontend (frontend/)  --HTTP-->  FastAPI backend (backend/)
              /api/v1/compliance-check                (Repomix + Playwright agent -> checker verdict, one call)
              /api/v1/compliance-check/{id}/answer    (resume with human answers for unresolved questions)
              /api/v1/auth/*, /api/v1/history         (accounts + saved analyses, PostgreSQL — spec 005)
+             /api/v1/history/{id}/articles           (guided RAG: explains the AI Act articles the verdict cites — spec 007)
 ```
+
+**AI Act article explanations (spec 007, guided RAG)**: for a complete
+analysis, the result page explains each article/annex the checker's verdict
+cites ("see Article 5"). *Guided*, not classic RAG: the checker decides which
+articles apply (regex over its verdict, `backend/ai_act.py`); similarity
+search (same fastembed model as `code_index.py`) only picks, **inside each
+cited article**, the official passages closest to the analysis's answers
+(e.g. 5(1)(f) emotion recognition among Article 5's 8 prohibitions); one
+Mistral call (JSON mode) explains them in French from those passages only,
+saying so when they don't settle which point applies. A whole-regulation
+search could surface an article that merely sounds related — a confidently
+wrong legal statement. Corpus: `backend/data/ai_act_en.json` (official
+EUR-Lex text of Regulation (EU) 2024/1689, English passages for retrieval —
+the checker and embedding model are English — plus official French titles;
+reusable with attribution per Decision 2011/833/EU), built once by
+`backend/scripts/build_ai_act_corpus.py` (stdlib only), so nothing external
+is called at request time. Cached per analysis in `article_explanations`
+keyed by a hash of the verdict (a changed verdict regenerates; a new table,
+not a column, because `create_all` can't alter the existing `analyses`).
 
 **Accounts & history (spec 005)**: running/resuming a check requires a
 logged-in user (email + password, argon2, 24h JWT bearer — `backend/auth.py`).
@@ -160,6 +180,15 @@ Current user's analyses, newest first; detail returns the saved result
 with `session_id` only while its in-memory session can still be resumed.
 `404` if not owned by the caller.
 
+### 🔒 `GET /api/v1/history/{analysis_id}/articles`
+Explanations of the articles/annexes the saved verdict cites (spec 007):
+`{"status": "ready"|"incomplete"|"no_references", "articles": [{"ref", "title",
+"url", "passages": [{"label", "text"}], "explanation", "why_it_applies",
+"what_it_implies", "available"}], "see_also": [{"ref", "title", "articles",
+"url"}]}`. Generated on first call (~3-5s), then served from the database
+until the verdict changes; `incomplete` without any AI call for a non-final
+verdict; `404` if not owned; `502`/`504` if Mistral fails (nothing cached).
+
 ### `GET /health`
 Liveness check.
 
@@ -276,15 +305,22 @@ Done:
 - Accounts + per-user history (spec 005): login required to analyze, every
   check saved with per-question detail, "Mes analyses" page, `/analyse?id=`
   reloads any saved result. Free-text human answers fixed.
+- AI Act article explanations (spec 007, guided RAG): each article/annex the
+  verdict cites, with the official passages matching the answers and a French
+  explanation (why it applies, what it implies), cached per verdict.
+  Live-verified: an emotion-recognition project's "Prohibited — Article 5"
+  verdict is explained from 5(1)(f).
 - PDF document input (spec 006): a check can run from a PDF alone, code alone,
   or both — live-verified all three, including a fact only resolvable when
   both sources are combined. No OCR; unreadable pages are skipped with a
   warning shown to the user, not silently ignored.
 
 Not done yet (from the original brief):
-- Cross-checking the checker's recommendation against the actual AI Act
-  article text (the brief asks the agent to independently verify which
-  article applies, not just trust the checker's own output).
+- Independently re-deriving *which* articles apply (the brief's "verify,
+  don't just trust the checker"): spec 007 deliberately trusts the checker's
+  citations and explains them against the official text — it doesn't audit
+  the checker's legal reasoning. Recitals aren't in the corpus; incomplete
+  verdicts get no explanation.
 - A structured "summary of the verification" report (`needs_human_input` is
   raw, not written up as a narrative). A two-stage summarize-then-fill
   approach was built and verified for this (`specs/004-two-stage-analysis/`)
