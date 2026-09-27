@@ -1,7 +1,8 @@
 # Cowsay — EU AI Act Compliance Checker
 
-**Goal (school project, EPF 5A):** given a codebase (+ optional company info),
-automatically determine whether that project complies with the EU AI Act.
+**Goal (school project, EPF 5A):** given a codebase and/or a PDF describing an AI
+system (+ optional company info), automatically determine whether that project
+complies with the EU AI Act.
 The app fills the official Future-of-Life-Institute checker
 (https://artificialintelligenceact.eu/assessment/eu-ai-act-compliance-checker/embedded/)
 using facts extracted from the code, returns its real recommendation, and
@@ -37,7 +38,8 @@ expiry), token in `localStorage` (cross-origin front/back rules out cookies
 without HTTPS on the backend). See `specs/005-user-accounts-history/research.md`.
 
 `POST /api/v1/compliance-check` is the one-shot flow (specs 002/003): upload
-→ Repomix → `backend/compliance_agent.py` drives a headless Chromium through
+(code file/zip and/or a PDF — spec 006, see below) → Repomix →
+`backend/compliance_agent.py` drives a headless Chromium through
 the official checker's form (a dynamic branching questionnaire — WS Form
 plugin — questions appear as earlier ones are answered, results computed by
 the site's own JS). **We drive the real page rather than reimplementing its
@@ -69,6 +71,21 @@ fast enough (~10s) that avoiding one wasn't worth the extra
 `analyze`/`resolve-gaps`/`run` round-trips. Code was removed; the spec is
 kept as a record of what was tried and why — see its `spec.md` Status.
 
+**PDF document input (spec 006)**: `file` (code) and a new `pdf` field are both
+optional on `/compliance-check`, but at least one is required. `backend/pdf_extract.py`
+extracts whatever text is present in the PDF's pages via `pypdf` (pure Python, no OCR,
+no system dependency); a page with no text layer (scanned/image-only) is simply
+skipped, and the user is warned (`pdf_warning` in the response) if a meaningful share
+of the document couldn't be read this way — the check still runs on whatever *was*
+extracted rather than failing outright. The extracted text is formatted with the same
+`## File: <name> (page N)` header Repomix's own output uses, then concatenated with
+the Repomix representation into one string — so `code_index.py`'s chunker/retriever
+needed **zero changes** to serve PDF-derived facts through the exact same per-question
+flow as code. Live-verified: a question left unresolved (low confidence) by code alone
+*and* by the PDF alone was answered correctly, at high confidence, once both were
+supplied together — proof both sources are genuinely consulted, not one silently
+preferred. See `specs/006-pdf-document-input/`.
+
 `backend/Dockerfile` — Python + Node (for Repomix) + Playwright/Chromium +
 pre-downloaded embedding model.
 
@@ -96,9 +113,11 @@ Register/login body `{"email", "password"}` (password ≥ 8 chars) → `{"access
 `Authorization: Bearer <token>` (`401` otherwise).
 
 ### 🔒 `POST /api/v1/compliance-check`
-Upload a file/zip (`file`), optional `company_name`, `company_context` (free
-text, e.g. policy doc contents). Runs Repomix, then the compliance agent,
-then saves the analysis. Returns:
+Upload a file/zip (`file`) and/or a PDF (`pdf`) — **at least one is required**
+(spec 006) — plus optional `company_name`, `company_context` (free text, e.g.
+policy doc contents). Runs Repomix (if `file`), extracts PDF text (if `pdf`),
+combines both into one context, runs the compliance agent, then saves the
+analysis. Returns:
 ```json
 {
   "session_id": "a1b2c3...",
@@ -113,9 +132,13 @@ then saves the analysis. Returns:
   "needs_human_input": [
     {"field_id": "wsf-1-field-57-row-1", "type": "radio", "question": "...",
      "reasoning": "...", "options": ["Provider", "Deployer", "..."]}
-  ]
+  ],
+  "pdf_warning": "1 page(s) sur 3 du PDF n’ont pas pu être lues comme texte..."
 }
 ```
+`400` if neither `file` nor `pdf` is provided, or if `pdf` isn't a valid PDF.
+`pdf_warning` is present only when a meaningful share of a submitted PDF's
+pages had no extractable text (scanned/image-only — not OCR'd, spec 006).
 
 ### 🔒 `POST /api/v1/compliance-check/{session_id}/answer`
 Resume a check with human-provided answers, without re-uploading the file
@@ -253,6 +276,10 @@ Done:
 - Accounts + per-user history (spec 005): login required to analyze, every
   check saved with per-question detail, "Mes analyses" page, `/analyse?id=`
   reloads any saved result. Free-text human answers fixed.
+- PDF document input (spec 006): a check can run from a PDF alone, code alone,
+  or both — live-verified all three, including a fact only resolvable when
+  both sources are combined. No OCR; unreadable pages are skipped with a
+  warning shown to the user, not silently ignored.
 
 Not done yet (from the original brief):
 - Cross-checking the checker's recommendation against the actual AI Act
@@ -284,3 +311,6 @@ Not done yet (from the original brief):
   would take ~90 minutes synchronously at current throughput for a project
   that large — needs background processing or a faster embedding setup (see
   `specs/002-rag-code-retrieval/research.md`).
+- OCR for scanned/image-only PDFs — deliberately out of scope (spec 006): a
+  system-level OCR dependency for a compliance tool risks confidently-wrong
+  answers from misread text, worse than the current "skip and warn" behavior.

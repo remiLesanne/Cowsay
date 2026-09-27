@@ -14,7 +14,7 @@ combined).
 
 ## Phase 1: Setup
 
-- [ ] T001 Add `pypdf` to `backend/requirements.txt` (research.md decision — pure-Python,
+- [X] T001 Add `pypdf` to `backend/requirements.txt` (research.md decision — pure-Python,
       no system package)
 
 ---
@@ -24,23 +24,17 @@ combined).
 **Purpose**: PDF extraction and the now-optional-file endpoint contract both user stories
 build on
 
-- [ ] T002 Create `backend/pdf_extract.py`: a function that takes raw PDF bytes + a
-      filename, opens it with `pypdf.PdfReader`, and for each page calls
-      `page.extract_text()`; a page whose extraction raises or returns empty/whitespace
-      text is skipped (not a fatal error, per FR-006). Returns
-      `(text: str, pages_with_text: int, total_pages: int)` where `text` joins each
-      readable page as `## File: <filename> (page N)\n<page text>\n` (same header
-      convention Repomix's markdown output uses, per research.md — this is what lets
-      `code_index.py` stay unchanged). Raise a clear, catchable error (not import an
-      unrelated pypdf exception type directly into `main.py`) if the file isn't openable
-      as a PDF at all (FR-005).
-- [ ] T003 In `backend/main.py`, change `create_compliance_check`'s `file` parameter from
-      `UploadFile = File(...)` (required) to `UploadFile | None = File(default=None)`,
-      and add `pdf: UploadFile | None = File(default=None)`. Add validation before any
-      processing: if both `file` and `pdf` are `None`, raise `HTTPException(400, ...)`
-      per data-model.md's request-changes table (FR-002) — this must be the very first
-      check in the handler, before `_convert_upload_to_repomix` or `pdf_extract` are
-      called.
+- [X] T002 Created `backend/pdf_extract.py` (`extract_pdf_text`, `ExtractedPdf`,
+      `InvalidPdfError`) exactly as specified. **Verified live** with real generated PDFs
+      (reportlab, dev-only): a 3-page all-text PDF → `pages_with_text=3, total_pages=3`,
+      correct `## File:` headers; a 2-page blank PDF → `pages_with_text=0`; a 3-page PDF
+      with a blank middle page → `pages_with_text=2` with pages 1 and 3 correctly kept and
+      correctly numbered (page 2 skipped, not renumbered); a non-PDF file → `InvalidPdfError`
+      raised cleanly.
+- [X] T003 `file` is now `UploadFile | None = File(default=None)`, `pdf` added as
+      `UploadFile | None = File(default=None)`; the `file is None and pdf is None` check is
+      the first line of `create_compliance_check`. **Verified live**: a request with neither
+      field → `400` immediately (confirmed no Repomix/Playwright/LLM work started).
 
 **Checkpoint**: the endpoint accepts an optional PDF and rejects an empty submission, but
 nothing yet uses the PDF's content in the answering flow.
@@ -56,38 +50,41 @@ result, without needing any source code.
 
 ### Implementation for User Story 1
 
-- [ ] T004 [US1] In `create_compliance_check` (`backend/main.py`), when `pdf` is present:
-      read its bytes (reuse `MAX_FILE_SIZE` as the ceiling per research.md; same
-      "trop volumineux" `413` wording style as the existing code-file check), validate
-      the `.pdf` extension, call `pdf_extract`'s extraction function, and catch its
-      "not a valid PDF" error into the same `400` shape used for an invalid ZIP (FR-005).
-- [ ] T005 [US1] Build the combined `code_context` string: Repomix's `representation` (if
-      `file` was given, else empty) concatenated with the PDF's extracted text (if `pdf`
-      was given, else empty), joined with a blank line — pass this single string to
-      `run_compliance_check` exactly as `representation` alone is passed today. No changes
-      to `compliance_agent.py` or `code_index.py` (plan.md's core design decision).
-- [ ] T006 [US1] Build the optional `pdf_warning` string per data-model.md's two wordings:
-      when `pages_with_text == 0` (nothing extracted at all) vs. `0 < pages_with_text <
-      total_pages` (partial). Omit the field entirely (or `None`) when no PDF was
-      submitted, or when every page yielded text. Include it in the endpoint's response.
-- [ ] T007 [US1] Update `_fingerprint_project`-based fingerprinting so it covers whichever
-      source(s) were actually submitted: when only `pdf` is given (no `project_dir` from
-      code), hash the PDF's raw bytes directly into the same SHA-256 digest instead of
-      calling the code-only fingerprint helper; when both are given, extend one digest
-      over both.
-- [ ] T008 [US1] Set the saved `Analysis.filename` per data-model.md's rule: code
-      filename when only `file` was given (unchanged), the PDF's filename when only `pdf`
-      was given, or both joined (e.g. `"app.zip + register.pdf"`) when both were given.
-- [ ] T009 [US1] In `frontend/app/lib/api.ts`, extend `runComplianceCheck`'s signature to
-      accept an optional PDF `File` alongside the existing code file, appended to the
-      `FormData` as a `pdf` field only when provided.
-- [ ] T010 [US1] In `frontend/app/page.tsx`, add a second, optional file input
-      (`accept="application/pdf"`) alongside the existing code upload, and pass it through
-      to `runComplianceCheck`.
-- [ ] T011 [US1] In `frontend/app/page.tsx`, block submission (with a clear inline
-      message) when neither the code file nor the PDF input has a file selected (FR-007).
+- [X] T004 [US1] `_extract_pdf_upload` in `backend/main.py`: extension check, `MAX_FILE_SIZE`
+      ceiling, `InvalidPdfError` → `400`. **Verified live**: a renamed non-PDF file → `400`.
+- [X] T005 [US1] `representation = "\n\n".join(...)` combines Repomix output and PDF text.
+      No changes made to `compliance_agent.py` or `code_index.py`, as planned. **Verified
+      live** (real Mistral + Playwright run, PDF describing a fictional "Loan Approval
+      Assistant" operated by "Acme Lending Corp", no code file): `Entity type` answered
+      `Provider` with reasoning explicitly citing "Acme Lending Corp" from the PDF text —
+      proves the PDF content reaches the LLM through the same retrieval path as code.
+- [X] T006 [US1] Both `pdf_warning` wordings implemented in `_extract_pdf_upload`, included
+      in the response only when non-empty. Also rendered in `frontend/app/analyse/page.tsx`
+      as an amber banner (not originally its own task, but SC-005 requires the user to
+      actually see it, not just have it in the API response). **Verified live**: a blank
+      2-page PDF → `pdf_warning: "Aucun texte n'a pu être extrait du PDF..."`; a 3-page PDF
+      with 1 blank page → `pdf_warning: "1 page(s) sur 3 du PDF n'ont pas pu être lues..."`
+      (confirmed raw UTF-8 bytes are correct — an earlier mangled-looking display was a
+      PowerShell/console artifact on the test client, not a server bug).
+- [X] T007 [US1] `_combined_fingerprint(code_fingerprint, pdf_bytes)`: returns
+      `code_fingerprint` unchanged when no PDF (byte-for-byte pre-feature behavior),
+      otherwise folds the PDF's raw bytes into a new SHA-256 digest.
+- [X] T008 [US1] `display_filename = " + ".join(...)` over whichever filename(s) were
+      given. **Verified live**: PDF-only → `"register.pdf"`; combined → `"loan_model.py +
+      combo_register.pdf"`.
+- [X] T009 [US1] `runComplianceCheck(file, pdf, companyName?, companyContext?)` in
+      `frontend/app/lib/api.ts`; `pdf` appended to `FormData` only when present.
+- [X] T010 [US1] Second optional file input added in `frontend/app/page.tsx` (a compact
+      "Choisir un PDF" control below the main drop zone, not a second full drag-and-drop
+      zone — the PDF is the secondary/optional input), wired to `runComplianceCheck`.
+- [X] T011 [US1] Submit button `disabled={(!file && !pdf) || isAnalysing}`, plus an inline
+      message when both are empty (FR-007).
 
 **Checkpoint**: a PDF-only submission produces a real result. Shippable increment (MVP).
+**Verified**: `tsc --noEmit`, `next lint`, and `next build` all pass with no errors.
+No browser-level visual check was done (no browser tool available in this environment) —
+recommend a quick manual look before considering the UI itself (not just the API
+contract) fully verified.
 
 ---
 
@@ -99,11 +96,10 @@ result, without needing any source code.
 
 ### Implementation for User Story 2
 
-- [ ] T012 [US2] No new code expected — this story validates that Phase 2/3's changes
-      (optional `file`, optional `pdf`, combined `code_context` build) produce byte-for-
-      byte identical behavior when `pdf` is simply never provided. Run
-      `quickstart.md`'s regression scenario and confirm the response, timing, and saved
-      `Analysis` row all match pre-feature behavior.
+- [X] T012 [US2] **Verified live**: a code-only submission (`loan_model.py`, no PDF)
+      completed in 10.3s with `file_count: 1`, `filename: "loan_model.py"`, no
+      `pdf_warning` key in the response, and `Entity type` correctly answered `Provider`
+      citing "BetaCredit Systems" from the code — matches pre-feature shape and behavior.
 
 **Checkpoint**: both PDF-only and code-only paths confirmed working independently.
 
@@ -117,11 +113,16 @@ result, without needing any source code.
 
 ### Implementation for User Story 3
 
-- [ ] T013 [US3] No new code expected — the concatenation approach from T005 already
-      combines both sources into one retrievable index by construction. Run
-      `quickstart.md`'s combined scenario (a fact only in the PDF, a fact only in the
-      code) and confirm both are answered correctly, proving both sources are actually
-      consulted rather than one silently shadowing the other.
+- [X] T013 [US3] **Verified live**: `loan_model.py` (states `OPERATOR_NAME = "BetaCredit
+      Systems"`, no mention of downstream modifications) submitted together with a PDF
+      (states only "no downstream party has modified this system", no mention of the
+      operator name). Result: `Entity type` → `Provider`, reasoning citing "BetaCredit
+      Systems" (code-only fact); `Downstream modifications` → `None of the above` at
+      **high** confidence, reasoning "The documentation explicitly states no downstream
+      modifications were made" (PDF-only fact) — this exact question was **low-confidence/
+      unresolved** in both the PDF-only and code-only runs above, and only got resolved
+      once both sources were combined. This is the strongest possible evidence for SC-003:
+      not just "both sources present", but a fact neither source alone could resolve.
 
 **Checkpoint**: all three user stories independently verified.
 
@@ -129,17 +130,19 @@ result, without needing any source code.
 
 ## Phase 6: Polish & Cross-Cutting Concerns
 
-- [ ] T014 [P] Run `quickstart.md`'s "PDF with no extractable text" and "PDF with some
-      unreadable pages" scenarios — confirm `pdf_warning` wording and that the check still
-      completes/escalates rather than failing outright (FR-006, FR-006a, SC-005).
-- [ ] T015 [P] Run `quickstart.md`'s "invalid PDF upload" and "neither PDF nor code"
-      scenarios — confirm both fail fast with a `400` and no wasted processing (SC-004).
-- [ ] T016 [P] Run `quickstart.md`'s regression check against
-      `specs/003-human-in-loop-answers` — resume a PDF-only or PDF+code session and
-      confirm it behaves identically to a code-only session.
-- [ ] T017 Update `README.md`: document the now-optional code upload, the new PDF input,
-      the no-OCR/skip-and-warn behavior, and the `pdf_warning` response field (Constitution
-      Principle V).
+- [X] T014 [P] **Verified live** (see T006): both the "nothing extractable" and "partial"
+      `pdf_warning` scenarios ran end-to-end without failing, with the correct wording.
+- [X] T015 [P] **Verified live** (see T003/T004): both fail fast with `400`, confirmed no
+      Repomix/Playwright/LLM cost incurred for either.
+- [X] T016 [P] **Verified live**: resumed a PDF-only session (built from a PDF with 1
+      unreadable page) with a human answer for the still-unresolved "High-risk AI system:
+      Annex I" question. The resume correctly applied the human answer
+      (`source: "human"`), did **not** re-run Repomix or re-embed, and the real checker's
+      branching logic revealed a genuinely new field (`wsf-1-field-wrapper-103`, "Annex I
+      Section B") exactly as it would for a code-derived session — zero special-casing
+      needed for a PDF-derived `ProjectIndex` in the resume path.
+- [X] T017 Updated `README.md` (see commit) — architecture section, API docs, env vars,
+      and Status section all now reflect the optional PDF input.
 
 ---
 

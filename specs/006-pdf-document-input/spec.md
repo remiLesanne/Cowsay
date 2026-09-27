@@ -4,7 +4,8 @@
 
 **Created**: 2026-09-27
 
-**Status**: Draft
+**Status**: Implemented (2026-09-27) — all three user stories live-verified, including
+the cross-source resolution proof for SC-003 (see `tasks.md`).
 
 **Input**: User description: "Accept a PDF as an alternative or complementary input to
 code for a compliance check. Sometimes the team only has a PDF describing the AI system
