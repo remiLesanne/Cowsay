@@ -1,8 +1,9 @@
 import hashlib
 import uuid
+from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import Session
 
@@ -97,22 +98,35 @@ async def get_article_explanations(
     # Verdict + prompt version: a changed verdict or a changed prompt regenerates.
     results_hash = hashlib.sha256(f"v{ai_act.EXPLANATION_VERSION}\n{analysis.results_text}".encode()).hexdigest()
     cached = db.get(ArticleExplanation, analysis.id)
-    if cached is not None and cached.results_hash == results_hash:
+    if is_usable_cache(cached, results_hash, datetime.now(timezone.utc)):
         return cached.content
 
     content = await ai_act.explain(analysis.results_text, analysis.question_details)
     if any(article["available"] and not article["explanation"] for article in content["articles"]):
-        # The LLM skipped an article: show what we have, but don't cache it, so the
-        # next visit tries again instead of keeping a hole forever.
-        return content
+        # The LLM skipped an article: show what we have and retry later, not on every
+        # page load — each try is a multi-thousand-token call on the shared quota.
+        content = {**content, "partial": True}
     # Upsert: two concurrent first loads (React dev mode fires effects twice) must not
-    # collide on the primary key.
+    # collide on the primary key. created_at is set explicitly: ON CONFLICT DO UPDATE
+    # doesn't apply the column's onupdate, and the partial-retry delay counts from it.
     statement = insert(ArticleExplanation).values(
         analysis_id=analysis.id, results_hash=results_hash, content=content
     )
     db.execute(statement.on_conflict_do_update(
         index_elements=[ArticleExplanation.analysis_id],
-        set_={"results_hash": results_hash, "content": content},
+        set_={"results_hash": results_hash, "content": content, "created_at": func.now()},
     ))
     db.commit()
     return content
+
+
+# How long a set with a skipped article is served before generation is tried again.
+PARTIAL_EXPLANATIONS_RETRY_AFTER = timedelta(minutes=10)
+
+
+def is_usable_cache(cached: ArticleExplanation | None, results_hash: str, now: datetime) -> bool:
+    if cached is None or cached.results_hash != results_hash:
+        return False
+    if not cached.content.get("partial"):
+        return True
+    return now - cached.created_at < PARTIAL_EXPLANATIONS_RETRY_AFTER
