@@ -52,7 +52,7 @@
 ## Phase 5: Polish & Cross-Cutting
 
 - [ ] T012 Run all [quickstart.md](quickstart.md) scenarios; `npx tsc --noEmit`, `npm run lint`, `npm run build` in `frontend/`
-- [ ] T013 [P] Update `README.md`: the guided-RAG feature and why guided, the endpoint, corpus source/licence/rebuild command, new table; in "Not done yet" replace the "cross-checking against the actual AI Act article text" item with what's done and what isn't (recitals, verdicts on incomplete forms)
+- [X] T013 [P] Update `README.md`: the guided-RAG feature and why guided, the endpoint, corpus source/licence/rebuild command, new table; in "Not done yet" replace the "cross-checking against the actual AI Act article text" item with what's done and what isn't (recitals, verdicts on incomplete forms)
 
 ---
 
