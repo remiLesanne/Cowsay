@@ -27,6 +27,7 @@ import session_store
 from compliance_agent import run_compliance_check, run_compliance_check_with_index
 from auth import get_current_user
 from db import Analysis, User, get_db, init_db
+from pdf_extract import InvalidPdfError, extract_pdf_text
 
 
 @asynccontextmanager
@@ -205,6 +206,57 @@ def _fingerprint_project(project_dir: Path) -> str:
     return digest.hexdigest()
 
 
+def _combined_fingerprint(code_fingerprint: str, pdf_bytes: bytes) -> str:
+    # specs/006: extends spec 005's "content is never stored, only its hash is"
+    # principle to a submitted PDF. Code-only stays byte-for-byte identical to
+    # pre-feature behavior (spec 006 SC-002) since there's nothing to combine.
+    if not pdf_bytes:
+        return code_fingerprint
+    digest = hashlib.sha256()
+    if code_fingerprint:
+        digest.update(code_fingerprint.encode())
+        digest.update(b"\0")
+    digest.update(pdf_bytes)
+    return digest.hexdigest()
+
+
+async def _extract_pdf_upload(pdf: UploadFile) -> tuple[bytes, str, str | None]:
+    """Validates and extracts text from an uploaded PDF (specs/006).
+
+    Returns (raw_bytes, extracted_text, warning) — warning is None unless a
+    meaningful share of the PDF's pages had no extractable text (FR-006a).
+    """
+    filename = pdf.filename or ""
+    if Path(filename).suffix.lower() != ".pdf":
+        raise HTTPException(status_code=400, detail="Le fichier PDF doit avoir l’extension .pdf")
+
+    content = await pdf.read(MAX_FILE_SIZE + 1)
+    if len(content) > MAX_FILE_SIZE:
+        raise HTTPException(status_code=413, detail="PDF trop volumineux (10 Mo maximum)")
+    if not content:
+        raise HTTPException(status_code=400, detail="Le PDF est vide")
+
+    try:
+        extracted = extract_pdf_text(content, filename)
+    except InvalidPdfError as error:
+        raise HTTPException(status_code=400, detail="PDF invalide") from error
+
+    warning = None
+    if extracted.total_pages > 0 and extracted.pages_with_text == 0:
+        warning = (
+            "Aucun texte n’a pu être extrait du PDF (probablement un document scanné) ; "
+            "son contenu n’a pas été pris en compte."
+        )
+    elif extracted.pages_with_text < extracted.total_pages:
+        unreadable = extracted.total_pages - extracted.pages_with_text
+        warning = (
+            f"{unreadable} page(s) sur {extracted.total_pages} du PDF n’ont pas pu être "
+            "lues comme texte et n’ont pas été prises en compte."
+        )
+
+    return content, extracted.text, warning
+
+
 async def _convert_upload_to_repomix(
     file: UploadFile, output_format: Literal["xml", "markdown"]
 ) -> tuple[str, list[str], str, str]:
@@ -298,7 +350,8 @@ class AnswerRequest(BaseModel):
 
 @app.post("/api/v1/compliance-check")
 async def create_compliance_check(
-    file: UploadFile = File(...),
+    file: UploadFile | None = File(default=None),
+    pdf: UploadFile | None = File(default=None),
     company_name: str | None = Form(default=None),
     company_context: str | None = Form(default=None),
     user: User = Depends(get_current_user),
@@ -306,12 +359,44 @@ async def create_compliance_check(
 ):
     """Run the uploaded project through the official EU AI Act Compliance Checker.
 
-    Converts the project to a Repomix representation, then drives the checker
-    at https://artificialintelligenceact.eu/assessment/eu-ai-act-compliance-checker/embedded/
-    with an LLM answering each question from the code (and optional company
-    context), returning the checker's own recommendation.
+    Converts the project to a Repomix representation, extracts text from an
+    optional PDF (e.g. an AI register entry — specs/006), and drives the
+    checker at
+    https://artificialintelligenceact.eu/assessment/eu-ai-act-compliance-checker/embedded/
+    with an LLM answering each question from whichever source(s) were
+    supplied (and optional company context), returning the checker's own
+    recommendation. At least one of `file` or `pdf` is required.
     """
-    representation, source_files, _, fingerprint = await _convert_upload_to_repomix(file, "markdown")
+    if file is None and pdf is None:
+        raise HTTPException(
+            status_code=400,
+            detail="Merci de fournir au moins un fichier de code ou un PDF",
+        )
+
+    code_representation = ""
+    source_files: list[str] = []
+    code_fingerprint = ""
+    filenames: list[str] = []
+
+    if file is not None:
+        code_representation, source_files, _, code_fingerprint = await _convert_upload_to_repomix(
+            file, "markdown"
+        )
+        filenames.append(file.filename or "")
+
+    pdf_text = ""
+    pdf_warning: str | None = None
+    pdf_bytes = b""
+    if pdf is not None:
+        pdf_bytes, pdf_text, pdf_warning = await _extract_pdf_upload(pdf)
+        filenames.append(pdf.filename or "")
+
+    # Both sources become one opaque text blob for the existing chunker/index
+    # (code_index.py's "## File:" header convention already covers both — see
+    # specs/006-pdf-document-input/plan.md) — no change needed there at all.
+    representation = "\n\n".join(part for part in (code_representation, pdf_text) if part)
+    fingerprint = _combined_fingerprint(code_fingerprint, pdf_bytes)
+    display_filename = " + ".join(name for name in filenames if name)
 
     extra_context = f"Company name: {company_name}\n{company_context or ''}".strip()
     result, project_index = await run_compliance_check(
@@ -324,7 +409,7 @@ async def create_compliance_check(
     # nothing behind (spec 005 Edge Cases).
     analysis = Analysis(
         user_id=user.id,
-        filename=file.filename or "",
+        filename=display_filename,
         content_fingerprint=fingerprint,
         company_name=company_name or None,
         results_text=result["results_text"],
@@ -341,13 +426,16 @@ async def create_compliance_check(
     session = session_store.get_session(session_id)
     session.unresolved_by_field_id = _index_unresolved(result["needs_human_input"])
 
-    return {
+    response = {
         "session_id": session_id,
         "analysis_id": str(analysis.id),
-        "filename": file.filename or "",
+        "filename": display_filename,
         "file_count": len(source_files),
         **result,
     }
+    if pdf_warning:
+        response["pdf_warning"] = pdf_warning
+    return response
 
 
 @app.post("/api/v1/compliance-check/{session_id}/answer")

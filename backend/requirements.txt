@@ -12,3 +12,4 @@ psycopg[binary]>=3
 pwdlib[argon2]
 pyjwt
 email-validator
+pypdf
