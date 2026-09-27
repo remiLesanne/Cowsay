@@ -17,3 +17,21 @@ body {
   color: var(--foreground);
   font-family: Arial, Helvetica, sans-serif;
 }
+
+/* Cowsay easter egg (components/CowsayEasterEgg.tsx). Explicit monospace: the theme's
+   --font-mono points to a Geist variable that is never loaded, and the ASCII art needs
+   fixed-width characters to line up. */
+.cowsay-pop {
+  animation: cowsay-pop 0.25s ease-out;
+}
+
+.cowsay-pop pre {
+  font-family: ui-monospace, "DejaVu Sans Mono", Menlo, Consolas, monospace;
+}
+
+@keyframes cowsay-pop {
+  from {
+    opacity: 0;
+    transform: translateY(12px) scale(0.95);
+  }
+}
