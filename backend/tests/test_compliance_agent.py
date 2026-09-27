@@ -58,8 +58,20 @@ def _ask_with_transport(monkeypatch, handler):
         compliance_agent, "_http_client", httpx.AsyncClient(transport=httpx.MockTransport(handler))
     )
     monkeypatch.setattr(compliance_agent, "LLM_RETRY_BASE_DELAY_S", 0)
+    monkeypatch.setattr(compliance_agent, "_pacer", compliance_agent.LlmPacer())
     monkeypatch.setenv("MISTRAL_API_KEY", "test-key")
     return asyncio.run(compliance_agent._ask_llm_for_answer(RADIO_FIELD, "", ""))
+
+
+def test_requests_are_deterministic(monkeypatch):
+    bodies = []
+
+    def handler(request):
+        bodies.append(json.loads(request.content))
+        return _llm_reply({"selected": ["Provider"], "confidence": "high"})
+
+    _ask_with_transport(monkeypatch, handler)
+    assert bodies[0]["temperature"] == 0
 
 
 def test_transient_llm_errors_are_retried(monkeypatch):

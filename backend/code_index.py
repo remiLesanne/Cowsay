@@ -1,14 +1,20 @@
 import logging
 import os
 import re
+import threading
 from dataclasses import dataclass
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
 EMBEDDING_MODEL_NAME = "sentence-transformers/all-MiniLM-L6-v2"
-TOP_K_CHUNKS = 5
-MAX_CHUNK_CHARS = 4000
+# Sized for the LLM token budget, the platform-wide bottleneck (specs/007 research.md
+# R5): at most 4 x 2,000 chars per question instead of 5 x 4,000. The embedding
+# model's tokenizer truncates at 128 tokens anyway (~400 chars of code), so a chunk
+# is retrieved on its opening lines; shorter chunks are represented better by that
+# opening and cost half the prompt. Checked on the reference projects: same answers.
+TOP_K_CHUNKS = 4
+MAX_CHUNK_CHARS = 2000
 
 # Explicit path rather than the library default: on a Windows Store (MSIX)
 # Python install, the default cache resolves under a sandboxed
@@ -41,18 +47,22 @@ from llama_index.embeddings.fastembed import FastEmbedEmbedding
 _FILE_HEADER_RE = re.compile(r"^## File: (.+)$", re.MULTILINE)
 
 _embed_model: FastEmbedEmbedding | None = None
+# Several checks index in parallel worker threads (specs/007): without the lock the
+# first two could each load their own copy of the model.
+_embed_model_lock = threading.Lock()
 
 
 def _get_embed_model() -> FastEmbedEmbedding:
     global _embed_model
-    if _embed_model is None:
-        # ONNX Runtime instead of the sentence-transformers/PyTorch backend —
-        # live-benchmarked on the same model at ~2.7x the indexing throughput
-        # (28 -> 76 chunks/s on a 1MB synthetic project), no accuracy tradeoff
-        # since it's the same all-MiniLM-L6-v2 weights, just a different runtime.
-        _embed_model = FastEmbedEmbedding(
-            model_name=EMBEDDING_MODEL_NAME, cache_dir=str(EMBEDDING_CACHE_DIR)
-        )
+    with _embed_model_lock:
+        if _embed_model is None:
+            # ONNX Runtime instead of the sentence-transformers/PyTorch backend —
+            # live-benchmarked on the same model at ~2.7x the indexing throughput
+            # (28 -> 76 chunks/s on a 1MB synthetic project), no accuracy tradeoff
+            # since it's the same all-MiniLM-L6-v2 weights, just a different runtime.
+            _embed_model = FastEmbedEmbedding(
+                model_name=EMBEDDING_MODEL_NAME, cache_dir=str(EMBEDDING_CACHE_DIR)
+            )
     return _embed_model
 
 

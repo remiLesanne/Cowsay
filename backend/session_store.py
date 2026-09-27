@@ -25,7 +25,17 @@ class ComplianceSession:
     extra_context: str | None = None
     unresolved_by_field_id: dict[str, dict] = field(default_factory=dict)
     human_answers: dict[str, str | list[str]] = field(default_factory=dict)
+    # The AI's answers already given in this analysis, by field id — reused on resume
+    # instead of asking the LLM the same question again (specs/007 FR-010).
+    ai_answers: dict[str, dict] = field(default_factory=dict)
+    # True while a resume for it waits in the queue or runs: the 30-minute window
+    # must not run out on a user who is only waiting their turn (specs/007 FR-009).
+    busy: bool = False
     expires_at: float = 0.0
+
+
+def _is_expired(session: ComplianceSession, now: float) -> bool:
+    return not session.busy and session.expires_at < now
 
 
 def _purge_expired() -> None:
@@ -33,7 +43,7 @@ def _purge_expired() -> None:
     # nobody comes back to would otherwise hold its ProjectIndex (embeddings of the
     # whole project) in memory until the process restarts.
     now = time.time()
-    for session_id in [sid for sid, session in _sessions.items() if session.expires_at < now]:
+    for session_id in [sid for sid, session in _sessions.items() if _is_expired(session, now)]:
         del _sessions[session_id]
 
 
@@ -43,6 +53,7 @@ def create_session(
     analysis_id: uuid.UUID,
     system_name: str | None,
     extra_context: str | None,
+    ai_answers: dict[str, dict] | None = None,
 ) -> str:
     _purge_expired()
     session_id = uuid.uuid4().hex
@@ -52,6 +63,7 @@ def create_session(
         analysis_id=analysis_id,
         system_name=system_name,
         extra_context=extra_context,
+        ai_answers=ai_answers if ai_answers is not None else {},
         expires_at=time.time() + SESSION_TTL_SECONDS,
     )
     return session_id
@@ -61,11 +73,21 @@ def get_session(session_id: str) -> ComplianceSession | None:
     session = _sessions.get(session_id)
     if session is None:
         return None
-    if session.expires_at < time.time():
+    if _is_expired(session, time.time()):
         del _sessions[session_id]
         return None
     session.expires_at = time.time() + SESSION_TTL_SECONDS
     return session
+
+
+def mark_busy(session: ComplianceSession) -> None:
+    session.busy = True
+
+
+def release(session: ComplianceSession) -> None:
+    """Ends a queued/running resume: the answering window restarts from now."""
+    session.busy = False
+    session.expires_at = time.time() + SESSION_TTL_SECONDS
 
 
 def find_session_id_by_analysis(analysis_id: uuid.UUID) -> str | None:

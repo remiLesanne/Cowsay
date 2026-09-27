@@ -1,4 +1,5 @@
 import asyncio
+import hashlib
 import io
 import zipfile
 
@@ -38,20 +39,34 @@ def test_zip_file_limit_counts_non_source_files(tmp_path, monkeypatch):
     assert error.value.status_code == 413
 
 
-def test_code_only_fingerprint_is_unchanged_by_pdf_support():
-    assert main._combined_fingerprint("abc", b"") == "abc"
-    assert main._combined_fingerprint("abc", b"%PDF") != main._combined_fingerprint("", b"%PDF")
+def test_zip_is_validated_without_extracting(monkeypatch):
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w") as archive:
+        archive.writestr("../evil.py", b"x")
+    with pytest.raises(HTTPException) as error:
+        main._validate_zip(buffer.getvalue())
+    assert error.value.status_code == 400
+    with pytest.raises(HTTPException) as error:
+        main._validate_zip(b"not a zip")
+    assert error.value.status_code == 400
 
 
-def test_concurrent_checks_beyond_the_limit_are_turned_away(monkeypatch):
+def test_fingerprints_of_single_sources_are_unchanged_by_pdf_support():
+    pdf_digest = hashlib.sha256(b"%PDF").hexdigest()
+    assert main._combined_fingerprint("abc", "") == "abc"
+    assert main._combined_fingerprint("", pdf_digest) == pdf_digest
+    assert main._combined_fingerprint("abc", pdf_digest) not in ("abc", pdf_digest)
+
+
+def test_concurrent_repomix_only_conversions_beyond_the_limit_are_turned_away(monkeypatch):
     async def scenario():
-        monkeypatch.setattr(main, "_check_slots", asyncio.Semaphore(1))
-        async with main._check_slot():
+        monkeypatch.setattr(main, "_repomix_only_slots", asyncio.Semaphore(1))
+        async with main._repomix_only_slot():
             with pytest.raises(HTTPException) as error:
-                async with main._check_slot():
+                async with main._repomix_only_slot():
                     pass
             assert error.value.status_code == 503
-        async with main._check_slot():  # released once the first check is done
+        async with main._repomix_only_slot():  # released once the first one is done
             pass
 
     asyncio.run(scenario())

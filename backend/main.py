@@ -3,14 +3,18 @@ import hashlib
 import io
 import logging
 import os
+import shutil
 import subprocess
 import sys
+import tempfile
 import time
+import uuid
 import zipfile
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, contextmanager
+from dataclasses import dataclass
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from typing import Literal
+from typing import Iterator, Literal
 
 logger = logging.getLogger(__name__)
 
@@ -26,16 +30,35 @@ load_dotenv()  # must run before compliance_agent reads MISTRAL_* at import time
 import auth
 import history
 import session_store
-from compliance_agent import run_compliance_check, run_compliance_check_with_index
 from auth import get_current_user
-from db import Analysis, User, get_db, init_db
+from compliance_agent import close_shared_browser, run_compliance_check, run_compliance_check_with_index
+from db import (
+    STATUS_QUEUED,
+    Analysis,
+    SessionLocal,
+    User,
+    get_db,
+    init_db,
+    recover_interrupted_analyses,
+)
+from job_queue import AlreadyQueued, Job, QueueFull, UserLimitReached, analysis_queue
 from pdf_extract import InvalidPdfError, extract_pdf_text
 
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     init_db()  # creates users/analyses tables on first run (specs/005)
+    # Uploads left by a previous process (killed without a clean shutdown) belong to
+    # analyses that are about to be marked failed below: nothing will ever read them.
+    shutil.rmtree(HELD_UPLOAD_DIR, ignore_errors=True)
+    HELD_UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+    recovered = recover_interrupted_analyses()
+    if recovered:
+        logger.warning("Marked %d analyses interrupted by the restart as failed", recovered)
+    analysis_queue.start()
     yield
+    await analysis_queue.stop()
+    await close_shared_browser()
 
 
 app = FastAPI(lifespan=lifespan)
@@ -50,12 +73,12 @@ MAX_ZIP_FILE_SIZE = 500 * 1024 * 1024
 MAX_ARCHIVE_SIZE = 500 * 1024 * 1024
 MAX_ARCHIVE_FILES = 5000
 REPOMIX_TIMEOUT_SECONDS = 300
-# Each check holds a Chromium instance plus a full embedding index in memory, so
-# an unbounded number of them in parallel would take the task down for everyone.
-# Extra requests are turned away immediately rather than queued: a queued request
-# would just run into the ALB's 300s idle timeout (see README, Deployment).
-MAX_CONCURRENT_CHECKS = int(os.environ.get("MAX_CONCURRENT_CHECKS", "2"))
-_check_slots = asyncio.Semaphore(MAX_CONCURRENT_CHECKS)
+# Where uploads wait for their turn in the queue (specs/007 FR-018: temporary only).
+HELD_UPLOAD_DIR = Path(tempfile.gettempdir()) / "cowsay-uploads"
+# Guards only the Repomix-only /api/v1/analyses endpoint, which is still one
+# synchronous request; compliance checks go through job_queue instead (specs/007).
+MAX_CONCURRENT_REPOMIX_ONLY = 2
+_repomix_only_slots = asyncio.Semaphore(MAX_CONCURRENT_REPOMIX_ONLY)
 # On Windows, npm's extensionless ".bin/repomix" is a POSIX shell script that
 # Windows can't execute directly (WinError 193) — the ".cmd" shim is the real
 # entry point there. Linux/Docker (production) uses the extensionless script.
@@ -103,14 +126,38 @@ def read_root():
     }
 
 @asynccontextmanager
-async def _check_slot():
-    if _check_slots.locked():
+async def _repomix_only_slot():
+    if _repomix_only_slots.locked():
         raise HTTPException(
             status_code=503,
-            detail="Le serveur traite déjà le maximum d’analyses simultanées, merci de réessayer dans quelques minutes",
+            detail="Le serveur traite déjà le maximum de conversions simultanées, merci de réessayer dans quelques minutes",
         )
-    async with _check_slots:
+    async with _repomix_only_slots:
         yield
+
+
+@contextmanager
+def _queue_errors_as_http() -> Iterator[None]:
+    try:
+        yield
+    except UserLimitReached as error:
+        raise HTTPException(
+            status_code=429,
+            detail=(
+                f"Vous avez déjà {analysis_queue.max_per_user} analyses en cours ou en attente, "
+                "merci d’attendre qu’une se termine"
+            ),
+        ) from error
+    except QueueFull as error:
+        raise HTTPException(
+            status_code=503,
+            detail="La plateforme est saturée, merci de réessayer dans quelques minutes",
+        ) from error
+    except AlreadyQueued as error:
+        raise HTTPException(
+            status_code=409,
+            detail="Cette analyse est déjà en attente ou en cours, merci d’attendre son résultat",
+        ) from error
 
 
 def _is_ignored_archive_path(path: Path) -> bool:
@@ -162,9 +209,13 @@ def _run_repomix(project_dir: Path, output_format: Literal["xml", "markdown"]):
     return completed_process.stdout
 
 
-def _write_zip_to_project(archive: zipfile.ZipFile, project_dir: Path) -> list[str]:
-    source_files = []
-    written_files = 0
+def _checked_archive_entries(archive: zipfile.ZipFile) -> Iterator[tuple[zipfile.ZipInfo, Path, str]]:
+    """Yields the archive's files to extract, enforcing every archive limit on the way.
+
+    Works from the central directory only, so the same checks can run at submission
+    time (nothing extracted — specs/007 FR-002) and again while extracting.
+    """
+    kept_files = 0
     uncompressed_size = 0
 
     for entry in archive.infolist():
@@ -192,12 +243,32 @@ def _write_zip_to_project(archive: zipfile.ZipFile, project_dir: Path) -> list[s
 
         # Counts every file written to disk, not just source files: an archive of
         # thousands of tiny non-source files is just as costly to extract and hash.
-        if written_files >= MAX_ARCHIVE_FILES:
+        if kept_files >= MAX_ARCHIVE_FILES:
             raise HTTPException(
                 status_code=413,
                 detail="L’archive contient trop de fichiers",
             )
+        kept_files += 1
 
+        yield entry, entry_path, normalized_name
+
+
+def _open_zip(content: bytes) -> zipfile.ZipFile:
+    try:
+        return zipfile.ZipFile(io.BytesIO(content))
+    except zipfile.BadZipFile as error:
+        raise HTTPException(status_code=400, detail="Archive ZIP invalide") from error
+
+
+def _validate_zip(content: bytes) -> None:
+    for _ in _checked_archive_entries(_open_zip(content)):
+        pass
+
+
+def _write_zip_to_project(archive: zipfile.ZipFile, project_dir: Path) -> list[str]:
+    source_files = []
+
+    for entry, entry_path, normalized_name in _checked_archive_entries(archive):
         target = (project_dir / entry_path).resolve()
         if project_dir.resolve() not in target.parents:
             raise HTTPException(
@@ -207,7 +278,6 @@ def _write_zip_to_project(archive: zipfile.ZipFile, project_dir: Path) -> list[s
 
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_bytes(archive.read(entry))
-        written_files += 1
 
         if entry_path.suffix.lower() in ALLOWED_EXTENSIONS - {".zip"}:
             source_files.append(normalized_name)
@@ -229,18 +299,16 @@ def _fingerprint_project(project_dir: Path) -> str:
     return digest.hexdigest()
 
 
-def _combined_fingerprint(code_fingerprint: str, pdf_bytes: bytes) -> str:
+def _combined_fingerprint(code_fingerprint: str, pdf_digest: str) -> str:
     # specs/006: extends spec 005's "content is never stored, only its hash is"
-    # principle to a submitted PDF. Code-only stays byte-for-byte identical to
-    # pre-feature behavior (spec 006 SC-002) since there's nothing to combine.
-    if not pdf_bytes:
+    # principle to a submitted PDF. Code-only and PDF-only stay identical to what
+    # they were (the code fingerprint, or the PDF's own SHA-256); combining uses the
+    # PDF's digest rather than its bytes so a queued job needn't keep the PDF around.
+    if not pdf_digest:
         return code_fingerprint
-    digest = hashlib.sha256()
-    if code_fingerprint:
-        digest.update(code_fingerprint.encode())
-        digest.update(b"\0")
-    digest.update(pdf_bytes)
-    return digest.hexdigest()
+    if not code_fingerprint:
+        return pdf_digest
+    return hashlib.sha256(f"{code_fingerprint}\0{pdf_digest}".encode()).hexdigest()
 
 
 async def _extract_pdf_upload(pdf: UploadFile) -> tuple[bytes, str, str | None]:
@@ -280,9 +348,8 @@ async def _extract_pdf_upload(pdf: UploadFile) -> tuple[bytes, str, str | None]:
     return content, extracted.text, warning
 
 
-async def _convert_upload_to_repomix(
-    file: UploadFile, output_format: Literal["xml", "markdown"]
-) -> tuple[str, list[str], str, str]:
+async def _read_code_upload(file: UploadFile) -> tuple[bytes, str, str]:
+    """Checks extension and size and reads the upload; returns (content, filename, extension)."""
     filename = file.filename or ""
     extension = Path(filename).suffix.lower()
 
@@ -308,13 +375,7 @@ async def _convert_upload_to_repomix(
     if not content:
         raise HTTPException(status_code=400, detail="Le fichier est vide")
 
-    # Extraction, hashing and the Repomix subprocess are all blocking; run in a
-    # worker thread so one large upload doesn't freeze every other request
-    # (including /health, which the load balancer uses to decide the task is dead).
-    representation, source_files, fingerprint = await asyncio.to_thread(
-        _prepare_project, content, filename, extension, output_format
-    )
-    return representation, source_files, extension, fingerprint
+    return content, filename, extension
 
 
 def _prepare_project(
@@ -326,11 +387,7 @@ def _prepare_project(
         project_dir.mkdir()
 
         if extension == ".zip":
-            try:
-                archive = zipfile.ZipFile(io.BytesIO(content))
-            except zipfile.BadZipFile as error:
-                raise HTTPException(status_code=400, detail="Archive ZIP invalide") from error
-            source_files = _write_zip_to_project(archive, project_dir)
+            source_files = _write_zip_to_project(_open_zip(content), project_dir)
         else:
             safe_filename = Path(filename).name or "uploaded-file"
             (project_dir / safe_filename).write_bytes(content)
@@ -351,8 +408,13 @@ async def create_analysis(
     output_format: Literal["xml", "markdown"] = "xml",
 ):
     """Convert an uploaded project to an AI-friendly Repomix representation."""
-    async with _check_slot():
-        representation, source_files, extension, _ = await _convert_upload_to_repomix(file, output_format)
+    async with _repomix_only_slot():
+        content, filename, extension = await _read_code_upload(file)
+        # Extraction, hashing and the Repomix subprocess are all blocking; run in a
+        # worker thread so they don't freeze every other request (incl. /health).
+        representation, source_files, _ = await asyncio.to_thread(
+            _prepare_project, content, filename, extension, output_format
+        )
 
     return {
         "analysis_id": "temporary-id",
@@ -378,6 +440,107 @@ def _index_unresolved(unresolved: list[dict]) -> dict[str, dict]:
     return {item["field_id"]: item for item in unresolved if "field_id" in item}
 
 
+@dataclass
+class HeldUpload:
+    """A code upload waiting in the queue: a private temp file, deleted by the queue
+    once its job ends (specs/007 FR-018 — never stored durably)."""
+
+    path: Path
+    filename: str
+    extension: str
+    size: int
+
+
+def _hold_upload(content: bytes, filename: str, extension: str) -> HeldUpload:
+    HELD_UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+    descriptor, path = tempfile.mkstemp(prefix="upload-", suffix=extension, dir=HELD_UPLOAD_DIR)
+    with os.fdopen(descriptor, "wb") as handle:
+        handle.write(content)
+    return HeldUpload(Path(path), filename, extension, len(content))
+
+
+def _save_results(analysis_id: uuid.UUID, result: dict, fingerprint: str | None = None) -> None:
+    logger.info(
+        "Analysis %s run finished: %d questions answered, %d asked to the LLM",
+        analysis_id, result["questions_answered"], result["llm_calls"],
+    )
+    with SessionLocal() as db:
+        analysis = db.get(Analysis, analysis_id)
+        if analysis is None:
+            return  # the account (and its analyses) was deleted while this ran
+        analysis.results_text = result["results_text"]
+        analysis.is_complete = result["is_complete"]
+        analysis.question_details = result["question_details"]
+        analysis.needs_human_input = result["needs_human_input"]
+        if fingerprint is not None:
+            analysis.content_fingerprint = fingerprint
+        db.commit()
+
+
+async def _run_first_check(
+    analysis_id: uuid.UUID,
+    user_id: uuid.UUID,
+    upload: HeldUpload | None,
+    pdf_text: str,
+    pdf_digest: str,
+    company_name: str | None,
+    extra_context: str,
+) -> None:
+    """Job body of a new analysis: everything that used to happen inside the request."""
+    code_representation = ""
+    code_fingerprint = ""
+    if upload is not None:
+        content = await asyncio.to_thread(upload.path.read_bytes)
+        code_representation, _, code_fingerprint = await asyncio.to_thread(
+            _prepare_project, content, upload.filename, upload.extension, "markdown"
+        )
+
+    # Both sources become one opaque text blob for the existing chunker/index
+    # (code_index.py's "## File:" header convention already covers both — see
+    # specs/006-pdf-document-input/plan.md) — no change needed there at all.
+    representation = "\n\n".join(part for part in (code_representation, pdf_text) if part)
+    ai_answers: dict[str, dict] = {}
+    result, project_index = await run_compliance_check(
+        code_context=representation,
+        system_name=company_name,
+        extra_context=extra_context,
+        ai_answers=ai_answers,
+    )
+    _save_results(analysis_id, result, _combined_fingerprint(code_fingerprint, pdf_digest))
+
+    session_id = session_store.create_session(
+        project_index, user_id, analysis_id, company_name, extra_context, ai_answers
+    )
+    session_store.get_session(session_id).unresolved_by_field_id = _index_unresolved(
+        result["needs_human_input"]
+    )
+
+
+async def _run_resume(session: session_store.ComplianceSession) -> None:
+    """Job body of a resume: reuses the cached index, the human answers and the AI's
+    earlier answers (no Repomix re-run, no re-embedding, no repeated LLM question)."""
+    result = await run_compliance_check_with_index(
+        session.project_index,
+        system_name=session.system_name,
+        extra_context=session.extra_context,
+        human_answers=session.human_answers,
+        ai_answers=session.ai_answers,
+    )
+    session.unresolved_by_field_id = _index_unresolved(result["needs_human_input"])
+    _save_results(session.analysis_id, result)
+
+
+def _accepted_response(analysis: Analysis, position: int, **extra) -> dict:
+    return {
+        "analysis_id": str(analysis.id),
+        "status": STATUS_QUEUED,
+        "queue_position": position,
+        "estimated_wait_seconds": analysis_queue.estimate_seconds(position),
+        "filename": analysis.filename,
+        **extra,
+    }
+
+
 class AnswerItem(BaseModel):
     field_id: str
     value: str | list[str]
@@ -387,7 +550,7 @@ class AnswerRequest(BaseModel):
     answers: list[AnswerItem]
 
 
-@app.post("/api/v1/compliance-check")
+@app.post("/api/v1/compliance-check", status_code=202)
 async def create_compliance_check(
     file: UploadFile | None = File(default=None),
     pdf: UploadFile | None = File(default=None),
@@ -396,104 +559,93 @@ async def create_compliance_check(
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    """Run the uploaded project through the official EU AI Act Compliance Checker.
+    """Queue the uploaded project for the official EU AI Act Compliance Checker.
 
-    Converts the project to a Repomix representation, extracts text from an
-    optional PDF (e.g. an AI register entry — specs/006), and drives the
-    checker at
+    Validates the input, then returns 202 at once (specs/007): the check itself —
+    Repomix on the code, text extracted from an optional PDF (specs/006), an LLM
+    answering each question of
     https://artificialintelligenceact.eu/assessment/eu-ai-act-compliance-checker/embedded/
-    with an LLM answering each question from whichever source(s) were
-    supplied (and optional company context), returning the checker's own
-    recommendation. At least one of `file` or `pdf` is required.
+    from whichever source(s) were supplied — runs from the queue, and its status and
+    result are read from GET /api/v1/history/{analysis_id}. At least one of `file` or
+    `pdf` is required.
     """
     if file is None and pdf is None:
         raise HTTPException(
             status_code=400,
             detail="Merci de fournir au moins un fichier de code ou un PDF",
         )
+    with _queue_errors_as_http():
+        # Fail fast, before reading a possibly large upload.
+        analysis_queue.ensure_can_enqueue(user.id)
 
-    async with _check_slot():
-        code_representation = ""
-        source_files: list[str] = []
-        code_fingerprint = ""
-        filenames: list[str] = []
+    # Every check that can fail on the input runs here, so the queue never holds a
+    # request that is bound to fail (spec FR-002).
+    code: tuple[bytes, str, str] | None = None
+    if file is not None:
+        code = await _read_code_upload(file)
+        if code[2] == ".zip":
+            await asyncio.to_thread(_validate_zip, code[0])
 
-        if file is not None:
-            code_representation, source_files, _, code_fingerprint = await _convert_upload_to_repomix(
-                file, "markdown"
-            )
-            filenames.append(file.filename or "")
+    pdf_text = ""
+    pdf_warning: str | None = None
+    pdf_digest = ""
+    if pdf is not None:
+        pdf_bytes, pdf_text, pdf_warning = await _extract_pdf_upload(pdf)
+        pdf_digest = hashlib.sha256(pdf_bytes).hexdigest()
 
-        pdf_text = ""
-        pdf_warning: str | None = None
-        pdf_bytes = b""
-        if pdf is not None:
-            pdf_bytes, pdf_text, pdf_warning = await _extract_pdf_upload(pdf)
-            filenames.append(pdf.filename or "")
+    upload = await asyncio.to_thread(_hold_upload, *code) if code is not None else None
+    try:
+        with _queue_errors_as_http():
+            # Re-checked now that the upload's size is known; nothing below awaits,
+            # so the check and the enqueue can't be separated by another request.
+            analysis_queue.ensure_can_enqueue(user.id, upload.size if upload else 0)
+    except HTTPException:
+        if upload is not None:
+            upload.path.unlink(missing_ok=True)
+        raise
 
-        # Both sources become one opaque text blob for the existing chunker/index
-        # (code_index.py's "## File:" header convention already covers both — see
-        # specs/006-pdf-document-input/plan.md) — no change needed there at all.
-        representation = "\n\n".join(part for part in (code_representation, pdf_text) if part)
-        fingerprint = _combined_fingerprint(code_fingerprint, pdf_bytes)
-        display_filename = " + ".join(name for name in filenames if name)
-
-        extra_context = f"Company name: {company_name}\n{company_context or ''}".strip()
-        result, project_index = await run_compliance_check(
-            code_context=representation,
-            system_name=company_name,
-            extra_context=extra_context,
-        )
-
-    # Saved only once the check succeeded: a failed run raises above and leaves
-    # nothing behind (spec 005 Edge Cases).
+    filenames = [name for name in ((file.filename if file else ""), (pdf.filename if pdf else "")) if name]
     analysis = Analysis(
         user_id=user.id,
-        filename=display_filename,
-        content_fingerprint=fingerprint,
+        filename=" + ".join(filenames),
         company_name=company_name or None,
-        results_text=result["results_text"],
-        is_complete=result["is_complete"],
-        question_details=result["question_details"],
-        needs_human_input=result["needs_human_input"],
         pdf_warning=pdf_warning,
+        status=STATUS_QUEUED,
     )
     db.add(analysis)
     db.commit()
 
-    session_id = session_store.create_session(
-        project_index, user.id, analysis.id, company_name, extra_context
-    )
-    session = session_store.get_session(session_id)
-    session.unresolved_by_field_id = _index_unresolved(result["needs_human_input"])
+    extra_context = f"Company name: {company_name}\n{company_context or ''}".strip()
+    position = analysis_queue.enqueue(Job(
+        analysis_id=analysis.id,
+        user_id=user.id,
+        run=lambda: _run_first_check(
+            analysis.id, user.id, upload, pdf_text, pdf_digest, company_name, extra_context
+        ),
+        held_file=upload.path if upload else None,
+        held_bytes=upload.size if upload else 0,
+    ))
 
-    response = {
-        "session_id": session_id,
-        "analysis_id": str(analysis.id),
-        "filename": display_filename,
-        "file_count": len(source_files),
-        **result,
-    }
+    response = _accepted_response(analysis, position)
     if pdf_warning:
         response["pdf_warning"] = pdf_warning
     return response
 
 
-@app.post("/api/v1/compliance-check/{session_id}/answer")
+@app.post("/api/v1/compliance-check/{session_id}/answer", status_code=202)
 async def answer_compliance_check(
     session_id: str,
     body: AnswerRequest,
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    """Resume a compliance check with human-provided answers.
+    """Queue a resume of a compliance check with human-provided answers.
 
-    Reuses the ProjectIndex built on the first call (no Repomix re-run, no
-    re-embedding — see specs/003-human-in-loop-answers/research.md) and skips
-    the LLM entirely for fields the human has now answered. Multiple-choice
-    answers are validated against the question's real options before any
-    browser automation runs, so a bad value fails fast instead of wasting a
-    30-90s Playwright run.
+    Reuses the ProjectIndex built on the first run (no Repomix re-run, no
+    re-embedding — see specs/003-human-in-loop-answers/research.md), skips the LLM
+    for fields the human has now answered and for those the AI already answered
+    (specs/007). Multiple-choice answers are validated against the question's real
+    options before anything is queued, so a bad value fails fast.
     """
     session = session_store.get_session(session_id)
     # Someone else's session is reported exactly like an unknown one (FR-014).
@@ -502,6 +654,14 @@ async def answer_compliance_check(
             status_code=404,
             detail="Session inconnue ou expirée, merci de renvoyer le fichier",
         )
+    analysis = db.get(Analysis, session.analysis_id)
+    if analysis is None:
+        raise HTTPException(status_code=404, detail="Analyse introuvable")
+
+    with _queue_errors_as_http():
+        if analysis_queue.is_active(session.analysis_id):
+            raise AlreadyQueued
+        analysis_queue.ensure_can_enqueue(user.id)
 
     accepted: dict[str, str | list[str]] = {}
     for answer in body.answers:
@@ -530,32 +690,21 @@ async def answer_compliance_check(
     # the session exactly as it was.
     session.human_answers.update(accepted)
 
-    async with _check_slot():
-        result = await run_compliance_check_with_index(
-            session.project_index,
-            system_name=session.system_name,
-            extra_context=session.extra_context,
-            human_answers=session.human_answers,
-        )
-    session.unresolved_by_field_id = _index_unresolved(result["needs_human_input"])
+    analysis.status = STATUS_QUEUED
+    analysis.error = None
+    db.commit()
+    session_store.mark_busy(session)
+    position = analysis_queue.enqueue(Job(
+        analysis_id=analysis.id,
+        user_id=user.id,
+        run=lambda: _run_resume(session),
+        on_finish=lambda: session_store.release(session),
+    ))
 
-    analysis = db.get(Analysis, session.analysis_id)
-    if analysis is not None and analysis.user_id == user.id:
-        analysis.results_text = result["results_text"]
-        analysis.is_complete = result["is_complete"]
-        analysis.question_details = result["question_details"]
-        analysis.needs_human_input = result["needs_human_input"]
-        db.commit()
-
-    response = {
-        "session_id": session_id,
-        "analysis_id": str(session.analysis_id),
-        "filename": analysis.filename if analysis else "",
-        **result,
-    }
+    response = _accepted_response(analysis, position, session_id=session_id)
     # Kept across resume rounds: the PDF pages that couldn't be read are still
     # missing from the answers, so the warning stays relevant.
-    if analysis is not None and analysis.pdf_warning:
+    if analysis.pdf_warning:
         response["pdf_warning"] = analysis.pdf_warning
     return response
 

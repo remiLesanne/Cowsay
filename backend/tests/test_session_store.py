@@ -18,6 +18,21 @@ def test_expired_sessions_are_purged_without_being_looked_up(monkeypatch):
     assert len(session_store._sessions) == 1
 
 
+def test_busy_session_never_expires_and_restarts_its_window_when_released(monkeypatch):
+    monkeypatch.setattr(session_store, "_sessions", {})
+    session_id = _new_session(uuid.uuid4())
+    session = session_store._sessions[session_id]
+    session_store.mark_busy(session)
+    session.expires_at = 0  # waited in the queue longer than the TTL
+
+    _new_session(uuid.uuid4())  # triggers a purge
+    assert session_store.get_session(session_id) is session
+
+    session_store.release(session)
+    assert not session.busy
+    assert session.expires_at > 0
+
+
 def test_expired_session_is_not_found_by_analysis(monkeypatch):
     monkeypatch.setattr(session_store, "_sessions", {})
     analysis_id = uuid.uuid4()

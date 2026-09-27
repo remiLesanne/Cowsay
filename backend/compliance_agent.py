@@ -4,6 +4,8 @@ import logging
 import os
 import re
 import time
+from collections import deque
+from typing import Awaitable, Callable
 
 import httpx
 from fastapi import HTTPException
@@ -27,9 +29,17 @@ DOM_SETTLE_TIMEOUT_MS = 500
 LLM_MAX_ATTEMPTS = 3
 LLM_RETRY_BASE_DELAY_S = 1.0
 LLM_RETRYABLE_STATUS = {429, 500, 502, 503, 504}
-# Only errors that fail fast are retried: retrying a 120s read timeout would
-# push the request past the ALB's 300s idle timeout anyway.
+# Only errors that fail fast are retried: retrying a 120s read timeout would hold
+# a queue slot for minutes on a provider that is clearly struggling.
 LLM_RETRYABLE_ERRORS = (httpx.ConnectError, httpx.ConnectTimeout, httpx.RemoteProtocolError)
+# Mistral free tier, measured 2026-09-27 (specs/007 research.md R1); replaced by the
+# limits the API reports in its response headers as soon as the first call returns.
+LLM_DEFAULT_REQUESTS_PER_MINUTE = 100
+LLM_DEFAULT_TOKENS_PER_MINUTE = 100_000
+# Headroom for anyone else using the same key (e.g. a developer running locally).
+LLM_QUOTA_UTILIZATION = 0.9
+# Room reserved for the JSON answer on top of the prompt's estimated tokens.
+LLM_ANSWER_TOKENS_ESTIMATE = 300
 
 _http_client: httpx.AsyncClient | None = None
 
@@ -42,6 +52,117 @@ def _get_http_client() -> httpx.AsyncClient:
     if _http_client is None:
         _http_client = httpx.AsyncClient(timeout=120)
     return _http_client
+
+
+class LlmPacer:
+    """Keeps every LLM call of the process under the provider's per-minute quotas.
+
+    Several checks run at once (specs/007) and they all share one API key; without
+    pacing they would overshoot the quota together and all get 429s at the same time.
+    Calls instead wait, first come first served, until the last 60 s of calls leaves
+    room for one more request and its tokens. A call's tokens are estimated from the
+    prompt when it's reserved, then replaced by the real usage once it returns.
+    """
+
+    WINDOW_S = 60.0
+
+    def __init__(
+        self,
+        requests_per_minute: int = LLM_DEFAULT_REQUESTS_PER_MINUTE,
+        tokens_per_minute: int = LLM_DEFAULT_TOKENS_PER_MINUTE,
+        utilization: float = LLM_QUOTA_UTILIZATION,
+        clock=time.monotonic,
+        sleep=asyncio.sleep,
+    ):
+        self.requests_per_minute = requests_per_minute
+        self.tokens_per_minute = tokens_per_minute
+        self._utilization = utilization
+        self._clock = clock
+        self._sleep = sleep
+        self._calls: deque[list[float]] = deque()  # [reserved_at, tokens]
+        self._lock: asyncio.Lock | None = None
+
+    def _used_tokens(self) -> float:
+        return sum(tokens for _, tokens in self._calls)
+
+    async def reserve(self, estimated_tokens: int) -> list[float]:
+        if self._lock is None:
+            self._lock = asyncio.Lock()
+        # asyncio.Lock wakes waiters in FIFO order: the oldest waiting call goes first.
+        async with self._lock:
+            while True:
+                now = self._clock()
+                while self._calls and self._calls[0][0] <= now - self.WINDOW_S:
+                    self._calls.popleft()
+                fits = (
+                    len(self._calls) + 1 <= self.requests_per_minute * self._utilization
+                    and self._used_tokens() + estimated_tokens <= self.tokens_per_minute * self._utilization
+                )
+                # An empty window always admits the call, even an oversized one,
+                # so nothing can wait forever.
+                if fits or not self._calls:
+                    call = [now, float(estimated_tokens)]
+                    self._calls.append(call)
+                    return call
+                wait = max(self._calls[0][0] + self.WINDOW_S - now, 0.05)
+                logger.info(
+                    "LLM quota pacing: waiting %.1fs (%d calls, %.0f tokens in the last minute)",
+                    wait, len(self._calls), self._used_tokens(),
+                )
+                await self._sleep(wait)
+
+    @staticmethod
+    def settle(call: list[float], actual_tokens: int) -> None:
+        call[1] = float(actual_tokens)
+
+    def update_limits(self, headers: httpx.Headers) -> None:
+        for header, attribute in (
+            ("x-ratelimit-limit-req-minute", "requests_per_minute"),
+            ("x-ratelimit-limit-tokens-minute", "tokens_per_minute"),
+        ):
+            try:
+                value = int(headers.get(header, ""))
+            except ValueError:
+                continue
+            if value > 0:
+                setattr(self, attribute, value)
+
+
+_pacer = LlmPacer()
+
+
+# One Chromium for the whole process, a fresh isolated context per check (specs/007
+# research.md R7): launching a browser per check doubled the memory and startup cost
+# of every concurrent check, while a context already has its own cookies/storage, so
+# one user's answers can't leak into another's form.
+_playwright = None
+_browser = None
+_browser_lock: asyncio.Lock | None = None
+
+
+async def _get_browser():
+    global _playwright, _browser, _browser_lock
+    if _browser_lock is None:
+        _browser_lock = asyncio.Lock()
+    async with _browser_lock:
+        if _browser is None or not _browser.is_connected():
+            if _playwright is None:
+                _playwright = await async_playwright().start()
+            _browser = await _playwright.chromium.launch(headless=True)
+        return _browser
+
+
+async def close_shared_browser() -> None:
+    global _playwright, _browser
+    if _browser is not None:
+        try:
+            await _browser.close()
+        except Exception:
+            logger.exception("Could not close the shared browser")
+        _browser = None
+    if _playwright is not None:
+        await _playwright.stop()
+        _playwright = None
 
 # Returns every currently visible question on the page (radio/checkbox groups and
 # text/email/textarea inputs), together with the question text scraped from the
@@ -212,7 +333,11 @@ async def _ask_llm_for_answer(field: dict, retrieved_code_text: str, extra_conte
 
 async def _post_to_llm(api_key: str, prompt: str) -> httpx.Response:
     client = _get_http_client()
+    # ~3 characters per token on code (measured ~4.5; over-estimating only delays a
+    # call until the real usage is known, under-estimating could overshoot the quota).
+    estimated_tokens = len(prompt) // 3 + LLM_ANSWER_TOKENS_ESTIMATE
     for attempt in range(1, LLM_MAX_ATTEMPTS + 1):
+        call = await _pacer.reserve(estimated_tokens)
         try:
             response = await client.post(
                 LLM_API_URL,
@@ -220,6 +345,9 @@ async def _post_to_llm(api_key: str, prompt: str) -> httpx.Response:
                 json={
                     "model": LLM_MODEL,
                     "messages": [{"role": "user", "content": prompt}],
+                    # Compliance answers should be reproducible: same material, same
+                    # question -> same answer (also what makes reusing them safe).
+                    "temperature": 0,
                 },
             )
         except LLM_RETRYABLE_ERRORS:
@@ -227,6 +355,11 @@ async def _post_to_llm(api_key: str, prompt: str) -> httpx.Response:
                 raise
             logger.warning("LLM call failed to connect (attempt %d), retrying", attempt)
         else:
+            _pacer.update_limits(response.headers)
+            if response.status_code == 200:
+                usage = response.json().get("usage") or {}
+                if isinstance(usage.get("total_tokens"), int):
+                    _pacer.settle(call, usage["total_tokens"])
             if response.status_code not in LLM_RETRYABLE_STATUS or attempt == LLM_MAX_ATTEMPTS:
                 return response
             logger.warning("LLM call returned %d (attempt %d), retrying", response.status_code, attempt)
@@ -361,10 +494,35 @@ async def _apply_answer(page, field: dict, answer: dict) -> bool:
         return True
 
 
+async def answer_field(
+    field: dict,
+    human_answers: dict[str, str | list[str]] | None,
+    ai_answers: dict[str, dict] | None,
+    ask_llm: Callable[[], Awaitable[dict]],
+) -> tuple[dict, str]:
+    """Picks where a field's answer comes from: the human, else the AI's earlier
+    answer in this analysis, else a new LLM call (cached for later rounds).
+
+    A cached answer is re-normalized against the options visible *now*: an earlier
+    answer may have changed which options the form offers, and an option that has
+    disappeared must not be clicked (it then counts as unanswered and is escalated).
+    """
+    human_value = human_answers.get(field["id"]) if human_answers else None
+    if human_value is not None:
+        return _human_answer_to_field_answer(field, human_value), "human"
+    if ai_answers is not None and field["id"] in ai_answers:
+        return normalize_llm_answer(field, ai_answers[field["id"]]), "ai"
+    answer = await ask_llm()
+    if ai_answers is not None:
+        ai_answers[field["id"]] = answer
+    return answer, "ai"
+
+
 async def run_compliance_check(
     code_context: str,
     system_name: str | None = None,
     extra_context: str | None = None,
+    ai_answers: dict[str, dict] | None = None,
 ) -> tuple[dict, ProjectIndex]:
     """Builds a fresh ProjectIndex from code_context, then runs the check.
 
@@ -372,11 +530,14 @@ async def run_compliance_check(
     for a later resume round via run_compliance_check_with_index — rebuilding it
     from scratch on every human-answer round would re-pay the indexing cost
     spec 002's research.md already measured as significant for large projects.
+    `ai_answers`, if given, is filled with the AI's answers for the same reason.
     """
     index_start = time.monotonic()
     project_index = await asyncio.to_thread(build_project_index, code_context)
     logger.info("Building the code index took %.2fs", time.monotonic() - index_start)
-    result = await run_compliance_check_with_index(project_index, system_name, extra_context)
+    result = await run_compliance_check_with_index(
+        project_index, system_name, extra_context, ai_answers=ai_answers
+    )
     return result, project_index
 
 
@@ -385,6 +546,7 @@ async def run_compliance_check_with_index(
     system_name: str | None = None,
     extra_context: str | None = None,
     human_answers: dict[str, str | list[str]] | None = None,
+    ai_answers: dict[str, dict] | None = None,
 ) -> dict:
     context_parts = []
     if system_name:
@@ -398,87 +560,92 @@ async def run_compliance_check_with_index(
     unresolved: list[dict] = []
     unresolved_ids: set[str] = set()
     apply_failed: dict[str, tuple[dict, dict]] = {}
+    llm_calls = 0
     run_start = time.monotonic()
 
-    async with async_playwright() as playwright:
-        browser = await playwright.chromium.launch(headless=True)
+    browser = await _get_browser()
+    context = await browser.new_context()
+    try:
+        page = await context.new_page()
+        nav_start = time.monotonic()
+        await page.goto(
+            COMPLIANCE_CHECKER_URL, wait_until="domcontentloaded", timeout=NAVIGATION_TIMEOUT_MS
+        )
+        logger.info("Navigation to checker page took %.2fs", time.monotonic() - nav_start)
+
         try:
-            page = await browser.new_page()
-            nav_start = time.monotonic()
-            await page.goto(
-                COMPLIANCE_CHECKER_URL, wait_until="domcontentloaded", timeout=NAVIGATION_TIMEOUT_MS
-            )
-            logger.info("Navigation to checker page took %.2fs", time.monotonic() - nav_start)
+            await page.get_by_text("Accept", exact=False).first.click(timeout=3000)
+        except Exception:
+            pass
 
-            try:
-                await page.get_by_text("Accept", exact=False).first.click(timeout=3000)
-            except Exception:
-                pass
+        for iteration in range(MAX_ITERATIONS):
+            fields = await page.evaluate(GET_VISIBLE_FIELDS_JS)
+            new_fields = [field for field in fields if field["id"] not in processed]
+            if not new_fields:
+                break
 
-            for iteration in range(MAX_ITERATIONS):
-                fields = await page.evaluate(GET_VISIBLE_FIELDS_JS)
-                new_fields = [field for field in fields if field["id"] not in processed]
-                if not new_fields:
-                    break
+            for field in new_fields:
+                field_start = time.monotonic()
 
-                for field in new_fields:
-                    field_start = time.monotonic()
-                    human_value = human_answers.get(field["id"]) if human_answers else None
-                    if human_value is not None:
-                        answer = _human_answer_to_field_answer(field, human_value)
-                        source = "human"
-                    else:
-                        question_text = _strip_html(field["question"])
-                        retrieved = await asyncio.to_thread(project_index.query, question_text)
-                        answer = await _ask_llm_for_answer(
-                            field, retrieved.as_prompt_text(), combined_extra_context
-                        )
-                        source = "ai"
-                    logger.info(
-                        "[iter %d] field %s (%s, %s) took %.2fs",
-                        iteration, field["id"], field["type"], source, time.monotonic() - field_start,
+                async def ask_llm(field=field):
+                    nonlocal llm_calls
+                    llm_calls += 1
+                    question_text = _strip_html(field["question"])
+                    retrieved = await asyncio.to_thread(project_index.query, question_text)
+                    return await _ask_llm_for_answer(
+                        field, retrieved.as_prompt_text(), combined_extra_context
                     )
-                    processed[field["id"]] = answer
-                    question_details.append(_describe_answered_field(field, answer, source))
-                    if answer.get("confidence") == "low" or (
-                        field["type"] in ("radio", "checkbox") and not answer.get("selected")
-                    ):
-                        unresolved.append(_describe_unresolved_field(field, answer))
-                        unresolved_ids.add(field["id"])
-                    applied = await _apply_answer(page, field, answer)
-                    if not applied:
-                        apply_failed[field["id"]] = (field, answer)
 
-                await page.wait_for_timeout(DOM_SETTLE_TIMEOUT_MS)
+                answer, source = await answer_field(field, human_answers, ai_answers, ask_llm)
+                logger.info(
+                    "[iter %d] field %s (%s, %s) took %.2fs",
+                    iteration, field["id"], field["type"], source, time.monotonic() - field_start,
+                )
+                processed[field["id"]] = answer
+                question_details.append(_describe_answered_field(field, answer, source))
+                if answer.get("confidence") == "low" or (
+                    field["type"] in ("radio", "checkbox") and not answer.get("selected")
+                ):
+                    unresolved.append(_describe_unresolved_field(field, answer))
+                    unresolved_ids.add(field["id"])
+                applied = await _apply_answer(page, field, answer)
+                if not applied:
+                    apply_failed[field["id"]] = (field, answer)
 
-            body_text = await page.inner_text("body")
-            results_text = _extract_results_section(body_text)
-            is_complete = "not yet completed" not in results_text.lower() and \
-                "incomplete" not in results_text.lower()
+            await page.wait_for_timeout(DOM_SETTLE_TIMEOUT_MS)
 
-            if not is_complete:
-                # A click/fill failure is ambiguous on its own (see _apply_answer's
-                # docstring) — but if the form is STILL incomplete once we're done,
-                # any answer that never actually registered is a real candidate for
-                # why, and the human deserves a lead rather than a dead end (observed
-                # live 2026-09-26: the loop found no new fields, returned
-                # needs_human_input: [], yet the checker still said "Incomplete" with
-                # nothing for the user to act on).
-                for field_id, (field, answer) in apply_failed.items():
-                    if field_id not in unresolved_ids:
-                        unresolved.append(_describe_unresolved_field(
-                            field, answer,
-                            reasoning_override="An answer was chosen but couldn't be "
-                            "applied to the form (the option may have stopped being "
-                            "available) — please answer this one directly.",
-                        ))
-                        unresolved_ids.add(field_id)
-        finally:
-            await browser.close()
+        body_text = await page.inner_text("body")
+        results_text = _extract_results_section(body_text)
+        is_complete = "not yet completed" not in results_text.lower() and \
+            "incomplete" not in results_text.lower()
+
+        if not is_complete:
+            # A click/fill failure is ambiguous on its own (see _apply_answer's
+            # docstring) — but if the form is STILL incomplete once we're done,
+            # any answer that never actually registered is a real candidate for
+            # why, and the human deserves a lead rather than a dead end (observed
+            # live 2026-09-26: the loop found no new fields, returned
+            # needs_human_input: [], yet the checker still said "Incomplete" with
+            # nothing for the user to act on).
+            for field_id, (field, answer) in apply_failed.items():
+                if field_id not in unresolved_ids:
+                    unresolved.append(_describe_unresolved_field(
+                        field, answer,
+                        reasoning_override="An answer was chosen but couldn't be "
+                        "applied to the form (the option may have stopped being "
+                        "available) — please answer this one directly.",
+                    ))
+                    unresolved_ids.add(field_id)
+    finally:
+        try:
+            await context.close()
+        except Exception:
+            # The shared browser may have crashed; it is relaunched on the next check.
+            logger.warning("Could not close the browser context (browser gone?)")
 
     logger.info(
-        "run_compliance_check_with_index total: %.2fs (%d fields processed)",
-        time.monotonic() - run_start, len(processed),
+        "run_compliance_check_with_index total: %.2fs (%d fields processed, %d asked to the LLM)",
+        time.monotonic() - run_start, len(processed), llm_calls,
     )
 
     return {
@@ -487,4 +654,6 @@ async def run_compliance_check_with_index(
         "questions_answered": len(processed),
         "question_details": question_details,
         "needs_human_input": unresolved,
+        # Not stored or returned to users — lets the caller log what a run cost.
+        "llm_calls": llm_calls,
     }
