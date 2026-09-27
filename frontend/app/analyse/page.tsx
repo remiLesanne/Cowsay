@@ -139,6 +139,11 @@ function AnalyseContent() {
 
       {result && (
         <>
+          {result.pdf_warning && (
+            <div className="mt-8 rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-800">
+              {result.pdf_warning}
+            </div>
+          )}
           <div className="mt-8 rounded-xl border border-slate-200 bg-white p-6 shadow-[0_12px_40px_rgba(15,23,42,0.05)]">
             <p className="text-xs font-semibold uppercase tracking-[0.15em] text-[#277da1]">Recommandation de l’EU AI Act Compliance Checker</p>
             <p className="mt-2 text-sm text-slate-500">{result.questions_answered} question(s) répondue(s)</p>

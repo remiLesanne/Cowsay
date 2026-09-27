@@ -10,6 +10,9 @@ const ACCEPTED_EXTENSIONS = ['.py', '.js', '.ts', '.tsx', '.jsx', '.java', '.go'
 const ACCEPTED_LABEL = 'Code, XML, Markdown ou ZIP';
 const MAX_CODE_FILE_SIZE = 10 * 1024 * 1024;
 const MAX_ZIP_FILE_SIZE = 500 * 1024 * 1024;
+// specs/006: a PDF is a bounded document (register entry, DPIA, factsheet), not a
+// project archive — reuses the single-code-file ceiling rather than a new constant.
+const MAX_PDF_FILE_SIZE = 10 * 1024 * 1024;
 
 function UploadIcon() {
   return <svg aria-hidden="true" className="h-8 w-8" fill="none" viewBox="0 0 24 24"><path d="M12 16V4m0 0L7.5 8.5M12 4l4.5 4.5M5 14v4.5A1.5 1.5 0 0 0 6.5 20h11a1.5 1.5 0 0 0 1.5-1.5V14" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.7" /></svg>;
@@ -23,9 +26,12 @@ export default function Home() {
   const router = useRouter();
   const user = useRequireAuth();
   const inputRef = useRef<HTMLInputElement>(null);
+  const pdfInputRef = useRef<HTMLInputElement>(null);
   const [file, setFile] = useState<File | null>(null);
+  const [pdf, setPdf] = useState<File | null>(null);
   const [isDragging, setIsDragging] = useState(false);
   const [message, setMessage] = useState('');
+  const [pdfMessage, setPdfMessage] = useState('');
   const [isAnalysing, setIsAnalysing] = useState(false);
 
   const isAccepted = (candidate: File) => {
@@ -63,15 +69,36 @@ export default function Home() {
     event.target.value = '';
   };
 
+  const selectPdf = (candidate?: File) => {
+    if (!candidate) return;
+    if (!candidate.name.toLowerCase().endsWith('.pdf')) {
+      setPdf(null);
+      setPdfMessage('Ce fichier n’est pas un PDF.');
+      return;
+    }
+    if (candidate.size > MAX_PDF_FILE_SIZE) {
+      setPdf(null);
+      setPdfMessage('Ce PDF dépasse la taille maximale de 10 Mo.');
+      return;
+    }
+    setPdfMessage('');
+    setPdf(candidate);
+  };
+
+  const handlePdfInput = (event: ChangeEvent<HTMLInputElement>) => {
+    selectPdf(event.target.files?.[0]);
+    event.target.value = '';
+  };
+
   const formatSize = (size: number) => size < 1024 * 1024 ? `${Math.max(1, Math.round(size / 1024))} Ko` : `${(size / (1024 * 1024)).toFixed(1)} Mo`;
 
   const openAnalysis = async () => {
-    if (!file || isAnalysing) return;
+    if ((!file && !pdf) || isAnalysing) return;
 
     setIsAnalysing(true);
     setMessage('');
     try {
-      const result = await runComplianceCheck(file);
+      const result = await runComplianceCheck(file, pdf);
       router.push(`/analyse?id=${encodeURIComponent(result.analysis_id)}`);
     } catch (error) {
       setMessage(error instanceof Error ? error.message : 'Impossible d’analyser ce fichier.');
@@ -98,7 +125,26 @@ export default function Home() {
           {message && <p className="px-2 pt-3 text-left text-sm text-rose-600">{message}</p>}
         </div>
 
-        <button className="mt-6 inline-flex h-12 w-full items-center justify-center rounded-lg bg-[#173f5f] px-7 text-sm font-semibold text-white transition hover:bg-[#12344f] disabled:cursor-not-allowed disabled:bg-slate-300 sm:w-auto" disabled={!file || isAnalysing} onClick={openAnalysis} type="button">{isAnalysing ? 'Analyse en cours (jusqu’à 2 min)…' : 'Lancer l’analyse'}</button>
+        <div className="mt-4 rounded-xl border border-slate-200 bg-white p-4 text-left shadow-[0_12px_40px_rgba(15,23,42,0.05)]">
+          <p className="text-sm font-medium text-slate-700">Optionnel : ajoutez un PDF décrivant le système IA</p>
+          <p className="mt-1 text-xs text-slate-500">Par exemple une fiche de registre IA, une DPIA, ou toute documentation — utile si vous n’avez pas (ou pas tout) le code source.</p>
+          <input ref={pdfInputRef} className="hidden" type="file" accept=".pdf,application/pdf" onChange={handlePdfInput} />
+          <div className="mt-3 flex flex-wrap items-center gap-3">
+            <button className="rounded-lg border border-slate-300 px-4 py-2 text-sm font-medium text-slate-700 hover:border-[#5a9db7] hover:text-[#277da1]" onClick={() => pdfInputRef.current?.click()} type="button">
+              {pdf ? 'Changer le PDF' : 'Choisir un PDF'}
+            </button>
+            {pdf && (
+              <span className="flex items-center gap-2 text-sm text-slate-600">
+                {pdf.name} ({formatSize(pdf.size)})
+                <button className="text-[#277da1] hover:underline" onClick={() => setPdf(null)} type="button">retirer</button>
+              </span>
+            )}
+          </div>
+          {pdfMessage && <p className="pt-2 text-sm text-rose-600">{pdfMessage}</p>}
+        </div>
+
+        <button className="mt-6 inline-flex h-12 w-full items-center justify-center rounded-lg bg-[#173f5f] px-7 text-sm font-semibold text-white transition hover:bg-[#12344f] disabled:cursor-not-allowed disabled:bg-slate-300 sm:w-auto" disabled={(!file && !pdf) || isAnalysing} onClick={openAnalysis} type="button">{isAnalysing ? 'Analyse en cours (jusqu’à 2 min)…' : 'Lancer l’analyse'}</button>
+        {!file && !pdf && <p className="mt-3 text-xs text-rose-500">Ajoutez un fichier de code ou un PDF pour continuer.</p>}
         <p className="mt-5 text-xs text-slate-400">Vos fichiers sont utilisés uniquement pour cette analyse.</p>
       </section>
     </main>

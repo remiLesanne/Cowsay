@@ -138,9 +138,17 @@ export async function getMe(): Promise<User> {
   return response.json();
 }
 
-export async function runComplianceCheck(file: File, companyName?: string, companyContext?: string): Promise<AnalysisResult> {
+// `file` and `pdf` are each optional, but at least one is required (specs/006 FR-002) —
+// the backend rejects a request with neither before doing any processing.
+export async function runComplianceCheck(
+  file: File | null,
+  pdf?: File | null,
+  companyName?: string,
+  companyContext?: string,
+): Promise<AnalysisResult> {
   const formData = new FormData();
-  formData.append('file', file);
+  if (file) formData.append('file', file);
+  if (pdf) formData.append('pdf', pdf);
   if (companyName) formData.append('company_name', companyName);
   if (companyContext) formData.append('company_context', companyContext);
 
@@ -209,6 +217,9 @@ export type AnalysisResult = {
   needs_human_input: UnresolvedQuestion[];
   created_at?: string;
   updated_at?: string;
+  // Present only when a meaningful share of a submitted PDF's pages had no
+  // extractable text (specs/006 FR-006a) — e.g. a scanned/image-only document.
+  pdf_warning?: string;
 };
 
 export type AnalysisSummary = {

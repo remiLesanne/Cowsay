@@ -27,7 +27,7 @@ export default function CompliancePage() {
     setError('');
     setResult(null);
     try {
-      const response = await runComplianceCheck(file, companyName || undefined, companyContext || undefined);
+      const response = await runComplianceCheck(file, null, companyName || undefined, companyContext || undefined);
       setResult(response);
     } catch (submitError) {
       setError(submitError instanceof Error ? submitError.message : 'Erreur inconnue.');
